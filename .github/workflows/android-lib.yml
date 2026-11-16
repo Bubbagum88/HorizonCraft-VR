@@ -1,0 +1,51 @@
+# Builds the game's Android library (libhorizon.so, arm64-v8a) as build_apk.sh does, and
+# uploads it. The rest of the APK (the Java runtime, the preparer, the OpenXR loader, the
+# Java classes) comes from a release APK the library is put into.
+name: Android library
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**", "quest1/**"]
+    paths:
+      - "crates/**"
+      - "third_party/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/android-lib.yml"
+
+concurrency:
+  group: android-lib-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules
+          df -h /
+      - uses: actions/checkout@v4
+      - name: Rust target and cargo-ndk
+        run: |
+          rustup update stable
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-arm64
+      - name: Build libhorizon.so
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a -P 26 -o target/android/jni build -p horizon-android --profile fast
+          "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
+            -o libhorizon.so target/android/jni/arm64-v8a/libhorizon.so
+          sha256sum libhorizon.so
+          ls -l libhorizon.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libhorizon-arm64-${{ github.sha }}
+          path: libhorizon.so
+          retention-days: 30

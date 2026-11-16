@@ -29,6 +29,8 @@ mod command;
 pub mod conv;
 mod descriptor;
 mod device;
+/// Horizon: the pipeline cache kept on disk between runs.
+pub mod disk_cache;
 mod drm;
 mod instance;
 mod sampler;
@@ -513,6 +515,8 @@ struct DeviceShared {
     extension_fns: DeviceExtensionFunctions,
     vendor_id: u32,
     pipeline_cache_validation_key: [u8; 16],
+    /// Horizon: the pipeline cache from [`disk_cache::set_file`]'s file.
+    disk_cache: Option<disk_cache::DiskCache>,
     timestamp_period: f32,
     private_caps: PrivateCapabilities,
     workarounds: Workarounds,
@@ -545,6 +549,9 @@ impl Drop for DeviceShared {
             self.raw
                 .destroy_descriptor_set_layout(self.empty_descriptor_set_layout, None)
         };
+        if let Some(cache) = &self.disk_cache {
+            cache.close(&self.raw);
+        }
         if self.drop_guard.is_none() {
             unsafe { self.raw.destroy_device(None) };
         }

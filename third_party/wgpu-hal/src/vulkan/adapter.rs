@@ -2902,6 +2902,9 @@ impl super::Adapter {
                 .map_err(super::map_host_device_oom_err)?
         };
 
+        let disk_cache =
+            super::disk_cache::DiskCache::open(&raw_device, &self.phd_capabilities.properties);
+
         let shared = Arc::new(super::DeviceShared {
             raw: raw_device,
             family_index,
@@ -2921,6 +2924,7 @@ impl super::Adapter {
                 external_memory_fd: external_memory_fd_fn,
             },
             pipeline_cache_validation_key,
+            disk_cache,
             vendor_id: self.phd_capabilities.properties.vendor_id,
             timestamp_period: self.phd_capabilities.properties.limits.timestamp_period,
             private_caps: self.private_caps.clone(),

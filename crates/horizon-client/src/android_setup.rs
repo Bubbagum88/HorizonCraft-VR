@@ -445,13 +445,17 @@ const JRE_ASSETS: &str = "assets/horizon-jre/";
 const PREPARE_ASSETS: &str = "assets/horizon-prepare/";
 
 /// The app's internal files folder (`/data/data/<package>/files`): the shared storage under
-/// `Android/data` cannot hold code (mapping it executable fails), this folder can.
+/// `Android/data` cannot hold code (mapping it executable fails), this folder can. Android
+/// makes it only when the app first asks for it from Java (`getFilesDir`), which a fresh
+/// install has not always done when setup gets here: the app owns `/data/data/<package>`,
+/// so it is made here.
 fn internal_dir() -> Option<PathBuf> {
     let cmdline = fs::read("/proc/self/cmdline").ok()?;
     let name = String::from_utf8_lossy(cmdline.split(|b| *b == 0).next()?).into_owned();
     let package = name.split(':').next()?.to_string();
     let dir = PathBuf::from(format!("/data/data/{package}/files"));
-    dir.is_dir().then_some(dir)
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
 }
 
 /// This app's APK: the runtime keeps it mapped (its dex and resources).

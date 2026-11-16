@@ -35,6 +35,11 @@ pub(crate) use crate::icon::NoIcon as PlatformIcon;
 pub(crate) static INPUT_FILTER: std::sync::OnceLock<crate::platform::android::InputFilter> =
     std::sync::OnceLock::new();
 
+/// When the event loop last read the input queue (Horizon's addition, for
+/// [`crate::platform::android::input_last_read`]).
+pub(crate) static INPUT_READ: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
 static HAS_FOCUS: AtomicBool = AtomicBool::new(true);
 
 /// Returns the minimum `Option<Duration>`, taking into account that `None`
@@ -324,6 +329,8 @@ impl<T: 'static> EventLoop<T> {
                 tracing::warn!("Failed to get input events iterator: {err:?}");
             },
         }
+        *INPUT_READ.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(std::time::Instant::now());
 
         // Empty the user event buffer
         {

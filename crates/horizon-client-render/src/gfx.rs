@@ -1935,6 +1935,22 @@ fn instance_descriptor(
     }
     descriptor
 }
+/// Where Vulkan keeps the pipelines it compiled: `HORIZON_CACHE` (Android's internal
+/// storage), else the game folder's cache.
+pub fn vulkan_pipeline_cache(home: &std::path::Path) -> std::path::PathBuf {
+    std::env::var_os("HORIZON_CACHE")
+        .map_or_else(|| home.join("cache"), std::path::PathBuf::from)
+        .join("vulkan-pipelines.bin")
+}
+/// Write the device's Vulkan pipeline cache when it compiled something since the last save.
+fn save_pipeline_cache(device: &wgpu::Device) {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(bytes) = horizon_hdr::save_pipeline_cache(device) {
+        log::info!("Horizon renderer: pipeline cache saved ({bytes} bytes)");
+    }
+    #[cfg(target_os = "macos")]
+    let _ = device;
+}
 /// Where DX12 keeps the shaders it compiled, inside a game folder.
 pub fn dx12_shader_cache(home: &std::path::Path) -> std::path::PathBuf {
     home.join("cache").join("dx12-shaders.bin")
@@ -2383,6 +2399,11 @@ async fn open_backend(
         limits.max_storage_buffer_binding_size,
         limits.max_texture_array_layers,
     ));
+    // Vulkan compiles every pipeline at each start without a cache: 7-9 s of the main thread
+    // on a Quest 1's Adreno 540. The device keeps what it compiled in this file and reads it
+    // back next time (third_party/wgpu-hal/src/vulkan/disk_cache.rs).
+    #[cfg(not(target_os = "macos"))]
+    wgpu::hal::vulkan::disk_cache::set_file(vulkan_pipeline_cache(&crate::logging::game_home()));
     let desc = wgpu::DeviceDescriptor {
         label: Some("Horizon device"),
         required_features: features,
@@ -4852,6 +4873,7 @@ impl Renderer {
         let panorama = panorama::Panorama::new(&device, frame_format, panorama_faces);
         drop(pipelines_step);
         reuse.finish(generation);
+        save_pipeline_cache(&device);
         if previous.is_some() {
             log::info!(
                 "Horizon renderer: rebuilt on the same device ({} shader modules, layouts and pipelines kept)",

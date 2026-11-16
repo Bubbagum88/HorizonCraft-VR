@@ -97,3 +97,14 @@ pub fn set_metadata(
     #[cfg(target_os = "macos")]
     let _ = (device, surface, paper_white, peak, black);
 }
+
+/// Writes the device's Vulkan pipeline cache to its file (wgpu-hal's
+/// `vulkan::disk_cache`, Horizon's addition) when it compiled a pipeline since
+/// the last save. The bytes written; `None` for nothing to save, no file, or
+/// another backend. For the crates that forbid unsafe code.
+#[cfg(not(target_os = "macos"))]
+pub fn save_pipeline_cache(device: &wgpu::Device) -> Option<usize> {
+    // Safety: the hal device is only read, and the guard dropped before returning.
+    let hal = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }?;
+    hal.save_pipeline_disk_cache()
+}

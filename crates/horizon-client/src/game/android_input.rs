@@ -10,6 +10,7 @@
 //! touch controls can hide.
 use horizon_client::gamepad::{Button, PadState};
 use std::sync::Mutex;
+use winit::platform::android::activity::InputStatus;
 use winit::platform::android::activity::input::{Axis, InputEvent, KeyAction, Keycode, MotionAction};
 
 /// `InputDevice.SOURCE_*` bits.
@@ -86,6 +87,54 @@ fn shared() -> std::sync::MutexGuard<'static, Shared> {
 /// Route input events through [`filter`]; called once before the event loop starts.
 pub(super) fn install() {
     winit::platform::android::set_input_filter(filter);
+    let _ = LOOP_THREAD.set((std::thread::current().id(), std::time::Instant::now()));
+    wgpu::hal::vulkan::disk_cache::set_pipeline_hook(read_input_while_busy);
+}
+
+/// The thread that runs the event loop and owns the input queue (`android_main`'s), and when
+/// the loop was made: the first renderer compiles before the loop has read any input.
+static LOOP_THREAD: std::sync::OnceLock<(std::thread::ThreadId, std::time::Instant)> =
+    std::sync::OnceLock::new();
+
+/// How long the event loop may be away before compiling reads the input itself.
+const LOOP_AWAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// After each pipeline is compiled: when the event loop's thread has not read the input
+/// queue for [`LOOP_AWAY`] (the renderer compiling its pipelines, 7-9 s on a Quest 1's
+/// Adreno 540), read it here. Android shows "not responding" for an app that leaves input
+/// unread for 5 s, and on a headset that box takes the VR session's focus. Events go through
+/// [`filter`] as in the loop (controller state stays current); the rest are dropped as
+/// handled, as winit would, but volume keys, which go back to the system.
+fn read_input_while_busy() {
+    let Some(&(thread, made)) = LOOP_THREAD.get() else {
+        return;
+    };
+    if thread != std::thread::current().id() {
+        return;
+    }
+    let read = winit::platform::android::input_last_read().unwrap_or(made);
+    if read.elapsed() < LOOP_AWAY {
+        return;
+    }
+    let Some(app) = super::ANDROID_APP.get() else {
+        return;
+    };
+    let Ok(mut events) = app.input_events_iter() else {
+        return;
+    };
+    while events.next(|event| {
+        if filter(event) {
+            return InputStatus::Handled;
+        }
+        match event {
+            InputEvent::KeyEvent(key)
+                if matches!(key.key_code(), Keycode::VolumeUp | Keycode::VolumeDown | Keycode::VolumeMute) =>
+            {
+                InputStatus::Unhandled
+            }
+            _ => InputStatus::Handled,
+        }
+    }) {}
 }
 
 /// The controller as the game reads it.
