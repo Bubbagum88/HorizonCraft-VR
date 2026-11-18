@@ -81,6 +81,9 @@ naga = { path = "third_party/naga" }
 libmimalloc-sys = { path = "third_party/libmimalloc-sys" }
 # winit with an input filter on Android (gamepad and mouse events; third_party/winit).
 winit = { path = "third_party/winit" }
+# android-activity 0.6.1 whose NativeActivity answers input left unread while the game's thread
+# is busy ("not responding" on a Quest 1; third_party/android-activity).
+android-activity = { path = "third_party/android-activity" }
 
 # Line tables keep file:line in backtraces; full debug info made every
 # example and test binary hundreds of megabytes and slow to link.

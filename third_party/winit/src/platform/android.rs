@@ -197,11 +197,3 @@ pub type InputFilter = fn(&activity::input::InputEvent<'_>) -> bool;
 pub fn set_input_filter(filter: InputFilter) {
     let _ = crate::platform_impl::INPUT_FILTER.set(filter);
 }
-
-/// When the event loop last read the activity's input queue; `None` before its first pass.
-/// Horizon's addition: work that holds the loop thread for seconds (compiling pipelines) reads
-/// the queue itself once the loop has been away a while, as Android shows "not responding" for
-/// an app that leaves input unread for 5 seconds.
-pub fn input_last_read() -> Option<std::time::Instant> {
-    *crate::platform_impl::INPUT_READ.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}

@@ -43,7 +43,17 @@ fn android_main(app: AndroidApp) {
         {
             std::env::set_var("HORIZON_SPIKES", text.trim());
         }
+        // `startup-trace.txt` in the game folder turns on HORIZON_STARTUP_TRACE: each step of
+        // the start (renderer, pipelines, textures, the handoff to the game) with its thread
+        // and time, in startup-trace.json beside it (Chrome trace format: Perfetto opens it).
+        if home.join("startup-trace.txt").exists()
+            && std::env::var_os("HORIZON_STARTUP_TRACE").is_none()
+        {
+            std::env::set_var("HORIZON_STARTUP_TRACE", home.join("startup-trace.json"));
+        }
     }
+    // As the desktop's entry does first thing; Android has no `main`.
+    horizon_client::spans::startup::init(std::time::Instant::now());
     let _ = std::fs::create_dir_all(home.join("..").join("cache"));
     let _ = std::env::set_current_dir(&home);
     // The folders players drop things into, ready in the Files app's Horizon root.

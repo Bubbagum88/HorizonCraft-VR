@@ -2191,7 +2191,6 @@ impl crate::Device for super::Device {
         if let Some(cache) = disk_cache {
             cache.note_compiled();
         }
-        super::disk_cache::pipeline_compiled();
 
         let raw = raw_vec.pop().unwrap();
         if let Some(label) = desc.label {
@@ -2284,7 +2283,6 @@ impl crate::Device for super::Device {
         if let Some(cache) = disk_cache {
             cache.note_compiled();
         }
-        super::disk_cache::pipeline_compiled();
 
         let raw = raw_vec.pop().unwrap();
         if let Some(label) = desc.label {

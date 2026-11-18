@@ -1,5 +1,4 @@
-//! Horizon: the Vulkan pipeline cache kept on disk between runs, and a hook
-//! that runs after each pipeline is compiled.
+//! Horizon: the Vulkan pipeline cache kept on disk between runs.
 //!
 //! Horizon creates its pipelines with no `VkPipelineCache`, so every start
 //! compiles all of them again. On a slow driver (Adreno 540 on the Quest 1)
@@ -36,26 +35,11 @@ const HEADER: usize = MAGIC.len() + IDENTITY + 8 + 8;
 pub const MAX_BYTES: u64 = 64 << 20;
 
 static FILE: OnceLock<PathBuf> = OnceLock::new();
-static HOOK: OnceLock<fn()> = OnceLock::new();
 
 /// Keep the pipeline cache in `path` for the rest of the run. Only the first
 /// call counts; without one nothing is kept on disk.
 pub fn set_file(path: PathBuf) {
     let _ = FILE.set(path);
-}
-
-/// Call `hook` on the compiling thread after each pipeline is compiled. Only
-/// the first call counts. Android uses it to keep reading the app's input
-/// while the main thread compiles for seconds.
-pub fn set_pipeline_hook(hook: fn()) {
-    let _ = HOOK.set(hook);
-}
-
-/// After one pipeline is compiled.
-pub(super) fn pipeline_compiled() {
-    if let Some(hook) = HOOK.get() {
-        hook();
-    }
 }
 
 /// One device's pipeline cache and the file it came from.

@@ -22510,7 +22510,9 @@ fn build_renderer(
     // over to the game.
     atlas.font.reset_cache();
     // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
-    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
+    let prepared = Some(prepared.unwrap_or_else(|| {
+        startup::time("renderer.world.textures_here", || prepare_renderer_textures(pack))
+    }));
     let atlas_pixels = atlas.pixels();
     let mut renderer = pollster::block_on(Renderer::new(
         window,
@@ -22547,14 +22549,20 @@ fn build_renderer(
     renderer
         .hud
         .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
-    pack.item_renderer
-        .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
+    startup::time("renderer.world.glint_atlas", || {
+        pack.item_renderer
+            .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)
+    })?;
     renderer.set_lines_shader(atlas.lines_shader.as_deref());
-    renderer.set_custom_sky(&pack.custom_sky);
+    startup::time("renderer.world.custom_sky", || {
+        renderer.set_custom_sky(&pack.custom_sky)
+    });
     let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
-    renderer
-        .hud
-        .set_cit_glints(&renderer.device, &renderer.queue, cit_glints);
+    startup::time("renderer.world.cit_glints", || {
+        renderer
+            .hud
+            .set_cit_glints(&renderer.device, &renderer.queue, cit_glints)
+    });
     Ok(renderer)
 }
 
