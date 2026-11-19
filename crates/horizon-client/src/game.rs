@@ -309,6 +309,8 @@ mod pad_actions;
 mod android_ime;
 #[cfg(target_os = "android")]
 mod android_input;
+#[cfg(target_os = "android")]
+mod vr_teleport;
 mod touch;
 mod pad_menu;
 mod paintings;
@@ -20050,6 +20052,9 @@ impl Game<'_> {
                             if self.tick_script.armed() {
                                 self.tick_script_step(event_loop);
                             }
+                            // VR: a teleport's next leg, before the player moves.
+                            #[cfg(target_os = "android")]
+                            self.xr_teleport_tick();
                             horizon_client::spans::time("tick", || self.tick())?;
                             // Cave mood (a shader pack's playerMood) samples on a random
                             // seeded from the clock: under `HORIZON_STILL` it waits for the

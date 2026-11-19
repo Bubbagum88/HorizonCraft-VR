@@ -74,6 +74,26 @@ fn android_main(app: AndroidApp) {
             // SAFETY: still before the game starts its threads.
             unsafe { std::env::set_var("HORIZON_XR_MSAA", "off") };
         }
+        // Snap turning (`turn=` degrees, 0 smooth) and teleport movement (`teleport=1`).
+        let number = |key: &str| {
+            text.lines()
+                .filter_map(|l| l.split_once('='))
+                .find(|(k, _)| k.trim() == key)
+                .and_then(|(_, v)| v.trim().parse::<f32>().ok())
+        };
+        if let Some(step) = number("turn").filter(|d| *d > 0.0)
+            && std::env::var_os("HORIZON_XR_TURN").is_none()
+        {
+            // SAFETY: still before the game starts its threads.
+            unsafe {
+                std::env::set_var("HORIZON_XR_TURN", "snap");
+                std::env::set_var("HORIZON_XR_SNAP", step.to_string());
+            }
+        }
+        if number("teleport").is_some_and(|t| t != 0.0) && std::env::var_os("HORIZON_XR_MOVE").is_none() {
+            // SAFETY: still before the game starts its threads.
+            unsafe { std::env::set_var("HORIZON_XR_MOVE", "teleport") };
+        }
         for (key, var) in [("scale", "HORIZON_XR_SCALE"), ("hz", "HORIZON_XR_HZ")] {
             let value = text
                 .lines()

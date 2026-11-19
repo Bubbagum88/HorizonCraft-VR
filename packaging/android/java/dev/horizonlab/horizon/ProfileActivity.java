@@ -240,7 +240,11 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
         final Button msaaButton = Ui.button(this, "", false);
         final Button scaleButton = Ui.button(this, "", false);
         final Button boostButton = Ui.button(this, "", false);
+        final Button turnButton = Ui.button(this, "", false);
+        final Button moveButton = Ui.button(this, "", false);
         final boolean[] pace = {vrSetting("pace", 1) != 0};
+        turnStep = (int) vrSetting("turn", 0);
+        teleportOn = vrSetting("teleport", 0) != 0;
         msaaOn = vrSetting("msaa", 1) != 0;
         boostOn = vrSetting("boost", 1) != 0;
         vrScale = vrSetting("scale", 0);
@@ -260,6 +264,11 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
                 msaaButton.setText("Antialiasing MSAA: " + (msaaOn ? "4x" : "Off"));
                 scaleButton.setText(String.format(java.util.Locale.ROOT, Ui.t("Разрешение: %.2fx", "Resolution: %.2fx"), vrScale));
                 boostButton.setText(Ui.t("Ускорение: ", "Performance boost: ") + (boostOn ? "On" : "Off"));
+                turnButton.setText(Ui.t("Поворот: ", "Turning: ") + (turnStep > 0
+                        ? String.format(java.util.Locale.ROOT, Ui.t("рывком %d°", "Snap %d°"), turnStep)
+                        : Ui.t("плавный", "Smooth")));
+                moveButton.setText(Ui.t("Движение: ", "Movement: ") + (teleportOn
+                        ? Ui.t("телепорт", "Teleport") : Ui.t("ходьба", "Walk")));
                 summary.setText(String.format(java.util.Locale.ROOT,
                         "Quality · %.2fx · 90 Hz · 6 chunks · anisotropic 8x%s", vrScale, msaaOn ? " · MSAA 4x" : ""));
             }
@@ -283,8 +292,9 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
         });
         scaleButton.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                // The next step up, then round again: sharper costs frames.
-                float[] steps = msaaOn ? new float[] {1.0f, 1.15f, 1.3f} : new float[] {1.2f, 1.4f};
+                // The next step up, then round again: sharper costs frames. 1.0x without MSAA
+                // too, for a headset whose GPU can't fill 1.2x (the Quest 1's).
+                float[] steps = msaaOn ? new float[] {1.0f, 1.15f, 1.3f} : new float[] {1.0f, 1.2f, 1.4f};
                 float next = steps[0];
                 for (float step : steps) {
                     if (step > vrScale + 0.01f) {
@@ -304,6 +314,21 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
                 showVr.run();
             }
         });
+        turnButton.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                // Smooth, then snap turns of 30, 45 and 90 degrees, then round again.
+                turnStep = turnStep == 0 ? 30 : turnStep == 30 ? 45 : turnStep == 45 ? 90 : 0;
+                saveVr(vrScale, 90, pace[0]);
+                showVr.run();
+            }
+        });
+        moveButton.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                teleportOn = !teleportOn;
+                saveVr(vrScale, 90, pace[0]);
+                showVr.run();
+            }
+        });
         card.addView(scaleButton, Ui.gap(this, 6));
         card.addView(Ui.text(this, Ui.t(
                 "Разрешение: выше — резче, но меньше кадров.",
@@ -313,6 +338,16 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
         card.addView(Ui.text(this, Ui.t(
                 "Ускорение: процессор и графика шлема на максимуме. Больше кадров, шлем теплее, батарея садится быстрее.",
                 "Performance boost: the headset's CPU and GPU at their highest clocks. More frames; the headset runs warmer and the battery drains faster."),
+                12, Ui.MUTED, false));
+        card.addView(turnButton, Ui.gap(this, 6));
+        card.addView(Ui.text(this, Ui.t(
+                "Поворот правым стиком: плавно или рывком на заданный угол.",
+                "Turning with the right stick: smoothly, or in snap steps at once (easier on the stomach)."),
+                12, Ui.MUTED, false));
+        card.addView(moveButton, Ui.gap(this, 6));
+        card.addView(Ui.text(this, Ui.t(
+                "Телепорт: левый стик вперёд — прицел левым контроллером на блок до 8 блоков, отпустить — переместиться. В воде и на лестницах стик ходит.",
+                "Teleport: push the left stick ahead and point the left controller at the top of a block up to 8 blocks away, let go to move there. In water and on ladders the stick walks."),
                 12, Ui.MUTED, false));
         card.addView(paceButton, Ui.gap(this, 6));
         card.addView(msaaButton, Ui.gap(this, 6));
@@ -560,7 +595,7 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
             scale = 1.0f; hz = 72; distance = 9; simulation = 8; clouds = "\"fast\""; particles = "0"; biome = 2; entities = "1.0";
         }
         try (java.io.FileWriter w = new java.io.FileWriter(vrFile())) {
-            w.write(String.format(java.util.Locale.ROOT, "mode=%s\nscale=%.2f\nhz=%d\npace=%d\nmsaa=%d\nboost=%d\npreset=2\n", mode, scale, hz, pace ? 1 : 0, msaaOn ? 1 : 0, boostOn ? 1 : 0));
+            w.write(String.format(java.util.Locale.ROOT, "mode=%s\nscale=%.2f\nhz=%d\npace=%d\nmsaa=%d\nboost=%d\nturn=%d\nteleport=%d\npreset=2\n", mode, scale, hz, pace ? 1 : 0, msaaOn ? 1 : 0, boostOn ? 1 : 0, turnStep, teleportOn ? 1 : 0));
         } catch (Exception ignored) {
         }
         java.util.LinkedHashMap<String, String> set = new java.util.LinkedHashMap<>();
@@ -601,6 +636,10 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
 
     /** The headset's CPU and GPU at their highest clocks (horizon-vr.txt `boost=`). */
     private boolean boostOn = true;
+    /** Snap turning's step in degrees, 0 for smooth turning (horizon-vr.txt `turn=`). */
+    private int turnStep = 0;
+    /** The left stick teleports instead of walking (horizon-vr.txt `teleport=`). */
+    private boolean teleportOn = false;
     /** The eyes' resolution (horizon-vr.txt `scale=`). */
     private float vrScale = 1.15f;
 
@@ -611,7 +650,7 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
 
     private void saveVr(float scale, int hz, boolean pace) {
         try (java.io.FileWriter w = new java.io.FileWriter(vrFile())) {
-            w.write(String.format(java.util.Locale.ROOT, "mode=quality\nscale=%.2f\nhz=%d\npace=%d\nmsaa=%d\nboost=%d\npreset=2\n", scale, hz, pace ? 1 : 0, msaaOn ? 1 : 0, boostOn ? 1 : 0));
+            w.write(String.format(java.util.Locale.ROOT, "mode=quality\nscale=%.2f\nhz=%d\npace=%d\nmsaa=%d\nboost=%d\nturn=%d\nteleport=%d\npreset=2\n", scale, hz, pace ? 1 : 0, msaaOn ? 1 : 0, boostOn ? 1 : 0, turnStep, teleportOn ? 1 : 0));
         } catch (Exception ignored) {
         }
     }

@@ -280,6 +280,11 @@ struct Session {
     /// the body's turn rate (degrees a second) between the last two drawn frames: a frame
     /// shown again turns by the stick's turn since (`turned_views`).
     drawn: Option<(f32, i64, Vec3)>,
+    /// Snap turning: the right stick has come back to the middle since its last turn.
+    snap_armed: bool,
+    /// Teleporting: where the player would land, from the eyes in the game's axes (as
+    /// `aim_points`), and whether it can be landed on (`set_teleport_target`).
+    teleport_point: Option<(Vec3, bool)>,
     yaw_rate: f32,
     queue: Option<wgpu::Queue>,
     stats: Stats,
@@ -861,6 +866,8 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         wrist_slot: None,
         wrist_point: None,
         aim_points: [None; 2],
+        snap_armed: true,
+        teleport_point: None,
         look_left: false,
         move_turn: 0.0,
         last_lean: Vec3::ZERO,
@@ -938,6 +945,27 @@ pub fn begin_frame() -> Option<FrameViews> {
         }
         pad.left_click = s.clicks[0].2;
         pad.right_click = s.clicks[1].2;
+        // Snap turning (`HORIZON_XR_TURN=snap`): the right stick pushed aside turns the body
+        // by a step at once, once per push; the game then sees no stick turn at all.
+        if let Some(step) = snap_turn_step()
+            && !s.menu_open
+        {
+            let x = pad.right[0];
+            if s.snap_armed && x.abs() > 0.7 {
+                let turn = step * x.signum();
+                s.body_yaw += turn;
+                // Not a steady turn: the frames shown again between drawn ones don't go on
+                // turning (`yaw_rate`).
+                if let Some(drawn) = s.drawn.as_mut() {
+                    drawn.0 += turn;
+                }
+                s.yaw_rate = 0.0;
+                s.snap_armed = false;
+            } else if x.abs() < 0.3 {
+                s.snap_armed = true;
+            }
+            pad.right[0] = 0.0;
+        }
         s.pad = pad;
         s.stats.pad = Some(read.map_err(|e| e.to_string()));
     }
@@ -947,6 +975,9 @@ pub fn begin_frame() -> Option<FrameViews> {
     if state.should_render && s.pace.repeat_now() && !s.last_views.is_empty() {
         if let Some(queue) = s.queue.clone() {
             let views = turned_views(s, state.predicted_display_time.as_nanos());
+            // The wrist's hotbar is a layer of its own, placed by the hands: it follows
+            // them on this frame too, not where they were at the last drawn one.
+            locate_hands(s, state.predicted_display_time);
             s.pending = Some((state, views));
             s.eye_drawn = [true; 2];
             s.stats.draws.entry("repeated").and_modify(|n| *n += 1).or_insert(1);
@@ -1004,14 +1035,7 @@ pub fn begin_frame() -> Option<FrameViews> {
             ],
         }
     });
-    let time = state.predicted_display_time;
-    for (i, space) in s.hand_spaces.iter().enumerate() {
-        s.hands[i] = space
-            .locate(&s.local, time)
-            .ok()
-            .filter(|l| l.location_flags.contains(tracked))
-            .map(|l| (quat(l.pose.orientation), vec3(l.pose.position)));
-    }
+    locate_hands(s, state.predicted_display_time);
     let hands = s.hands.map(|hand| {
         hand.map(|(rotation, position)| HandPose {
             rotation: body * rotation,
@@ -1127,6 +1151,18 @@ fn panel_hit(panel: xr::Posef, width: f32, height: f32, origin: Vec3, direction:
 
 /// The left forearm in LOCAL space: the grip's position, the aim's direction (the
 /// controller's handle slants; the arm lies along where it points).
+/// The controllers in LOCAL space at `time` (the frame's display time), untracked ones none.
+fn locate_hands(s: &mut Session, time: xr::Time) {
+    let tracked = xr::SpaceLocationFlags::ORIENTATION_VALID | xr::SpaceLocationFlags::POSITION_VALID;
+    for (i, space) in s.hand_spaces.iter().enumerate() {
+        s.hands[i] = space
+            .locate(&s.local, time)
+            .ok()
+            .filter(|l| l.location_flags.contains(tracked))
+            .map(|l| (quat(l.pose.orientation), vec3(l.pose.position)));
+    }
+}
+
 fn forearm(hands: &[Option<(Quat, Vec3)>; 4]) -> Option<(Quat, Vec3)> {
     let (_, position) = hands[Hand::LeftGrip as usize]?;
     let (rotation, _) = hands[Hand::LeftAim as usize]?;
@@ -1183,6 +1219,35 @@ pub fn move_turn() -> f32 {
 
 /// Where each controller aims in the world, camera-relative (the block or mob it picks),
 /// and the block face's normal there, left then right, for their crosshairs.
+/// Snap turning's step in degrees (`HORIZON_XR_TURN=snap`, `HORIZON_XR_SNAP` degrees,
+/// 30 by default), or none for smooth turning.
+pub fn snap_turn_step() -> Option<f32> {
+    static STEP: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *STEP.get_or_init(|| {
+        (std::env::var("HORIZON_XR_TURN").as_deref() == Ok("snap")).then(|| {
+            std::env::var("HORIZON_XR_SNAP")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|d| (5.0..=90.0).contains(d))
+                .unwrap_or(30.0)
+        })
+    })
+}
+
+/// Whether the left stick teleports instead of walking (`HORIZON_XR_MOVE=teleport`).
+pub fn teleport_movement() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_XR_MOVE").as_deref() == Ok("teleport"))
+}
+
+/// Where a teleport being aimed would land (from the eyes, the game's axes) and whether it
+/// can be landed on, drawn as a large crosshair on the ground; none while not aiming.
+pub fn set_teleport_target(at: Option<(Vec3, bool)>) {
+    if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
+        s.teleport_point = at;
+    }
+}
+
 pub fn set_aim_points(at: [Option<(Vec3, Option<Vec3>)>; 2]) {
     if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
         s.aim_points = at;
@@ -1506,6 +1571,18 @@ fn finish_frame(s: &mut Session, sharpen: bool, queue: &wgpu::Queue) {
                     pose(facing(normal, at), at + normal * 0.01),
                     (0.022 * distance).clamp(0.02, 0.3),
                 ));
+            }
+        }
+        // A teleport being aimed: a large cross lying on the ground where the player would
+        // land, in the left hand's place, or a red dot where it can't be landed on.
+        if let Some((offset, can_land)) = s.teleport_point.filter(|_| s.menu_pose.is_none()) {
+            let body = body_rotation(s.body_yaw).inverse();
+            let at = body * offset + head_at - s.last_lean;
+            let lying = pose(facing(Vec3::Y, at), at + Vec3::Y * 0.02);
+            cross_at[0] = can_land.then_some((lying, 0.5));
+            if !can_land {
+                colours[0] = wgpu::Color { r: 0.9, g: 0.2, b: 0.2, a: 1.0 };
+                spots[0] = Some((lying, 0.15));
             }
         }
         for i in 0..2 {

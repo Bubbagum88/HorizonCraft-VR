@@ -1245,6 +1245,8 @@ pub struct Renderer {
     /// Screen effects: alpha-blended, then vignette (`dst * (1 - src)`)
     /// pipelines, each for every sampling (index `blend * 4 + sampling`).
     screen_pipelines: [wgpu::RenderPipeline; 16],
+    /// The same, blend and sampling only, drawn at the end of the first-person hand's pass.
+    screen_hand_pipelines: [wgpu::RenderPipeline; 8],
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,
     entity_group: wgpu::BindGroup,
@@ -4538,7 +4540,9 @@ impl Renderer {
         };
         // One per blend and `.png.mcmeta` sampling (screen_effects::SAMPLE_*):
         // the shader is specialised, so a pixel pays for none of the others.
-        let screen_pipelines: [wgpu::RenderPipeline; 16] = std::array::from_fn(|i| {
+        // `in_hand`: for the first-person hand's pass (its depth attachment, never tested or
+        // written), so the screen effects need no full-frame pass of their own.
+        let screen_pipeline = |i: usize, in_hand: bool| {
             let blur = i as u32 & crate::screen_effects::SAMPLE_BLUR != 0;
             let (entry, blend) = match (i & 4 == 0, blur) {
                 (true, false) => ("fs_screen", alpha_blend),
@@ -4565,7 +4569,13 @@ impl Renderer {
                     cull_mode: None,
                     ..Default::default()
                 },
-                depth_stencil: None,
+                depth_stencil: in_hand.then(|| wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &screen_shader,
@@ -4585,7 +4595,12 @@ impl Renderer {
                 multiview_mask: None,
                 cache: None,
             })
-        });
+        };
+        let screen_pipelines: [wgpu::RenderPipeline; 16] =
+            std::array::from_fn(|i| screen_pipeline(i, false));
+        // Only blend and sampling: the hand's pass never takes HDR's world tints (8 and up).
+        let screen_hand_pipelines: [wgpu::RenderPipeline; 8] =
+            std::array::from_fn(|i| screen_pipeline(i, true));
         let screen_capacity = 64;
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Screen effect vertices"),
@@ -5006,6 +5021,7 @@ impl Renderer {
             border_uniform,
             border_vertices,
             screen_pipelines,
+            screen_hand_pipelines,
             screen_buffer,
             screen_capacity,
             entity_group,
@@ -7655,6 +7671,10 @@ impl Renderer {
         };
         self.xr_hud_skip = true;
         let mut drawn = Ok(false);
+        // The CPU's part of both eyes: building and encoding each (`last_encode`, waits
+        // left out) and the whole loop, for the log.
+        let eyes_started = std::time::Instant::now();
+        let mut encode = std::time::Duration::ZERO;
         for (i, eye) in xr.eyes.iter().enumerate() {
             self.xr_view = Some(ViewSet::with_cull(xr_eye_view(eye, far), cull));
             self.xr_eye_fov = Some(eye.fov);
@@ -7662,6 +7682,7 @@ impl Renderer {
                 self.xr_dev_snapshot();
             }
             drawn = self.render_screen(frame);
+            encode += self.last_encode;
             horizon_xr::note_draw(match &drawn {
                 Ok(true) => "drawn",
                 Ok(false) => "not drawn",
@@ -7677,6 +7698,7 @@ impl Renderer {
         }
         self.xr_hud_skip = false;
         self.xr_eye_fov = None;
+        let eyes_cpu = eyes_started.elapsed();
         if matches!(drawn, Ok(true)) {
             self.xr_draw_hud(frame, panel);
         }
@@ -7685,7 +7707,8 @@ impl Renderer {
         horizon_xr::note_renderer(|| {
             format!(
                 "sections resident {}, drawn {}, draws {}, draw calls {}, indices {}k, culled {:?}, GPU \
-                 culling {}, MSAA {}, size {}x{}; slowest passes (ms per eye) {}",
+                 culling {}, MSAA {}, size {}x{}; CPU both eyes {:.2} ms (encoding {:.2} ms); \
+                 slowest passes (ms per eye) {}",
                 self.resident_sections(),
                 self.drawn_sections,
                 self.section_draws,
@@ -7696,6 +7719,8 @@ impl Renderer {
                 if self.msaa_used { msaa_samples() } else { 0 },
                 self.config.width,
                 self.config.height,
+                eyes_cpu.as_secs_f64() * 1000.0,
+                encode.as_secs_f64() * 1000.0,
                 {
                     let mut passes = self.own_pass_times();
                     passes.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -11800,6 +11825,20 @@ impl Renderer {
                 horizon_xr::note_panel_in_eyes();
             }
         }
+        // The screen effects (vignette, pumpkin, portal...) at the end of the hand's pass when
+        // nothing vanilla puts between them runs this frame (entity outlines, the world icon's
+        // grab, post effects, a native mod's hand hook, HDR's tints): a full-frame pass fewer,
+        // which on a tiled GPU (the Quest's) is a load and a store of the whole frame.
+        let screen_in_hand = overlay.hand_quads > 0
+            && !frame.screen.is_empty()
+            && self.hdr.is_none()
+            && !self.entity_outline.has_work()
+            && !self
+                .screenshot
+                .as_ref()
+                .is_some_and(|request| overlay.real && request.size.is_some())
+            && (frame.title || frame.post_effects.effects.is_empty())
+            && !(overlay.real && !frame.title && native_render::hand_drawn_hooked());
         if overlay.hand_quads > 0 {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: view_target,
@@ -11834,6 +11873,19 @@ impl Renderer {
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
             pass.draw_indexed(0..overlay.hand_quads * 6, overlay.first_hand_vertex, 0..1);
+            if screen_in_hand {
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_vertex_buffer(0, self.screen_buffer.slice(..));
+                for (i, quad) in frame.screen.iter().enumerate() {
+                    let blend = match quad.blend {
+                        crate::screen_effects::Blend::Alpha => 0,
+                        crate::screen_effects::Blend::Vignette => 4,
+                    };
+                    let sampling = (quad.sampling & 3) as usize;
+                    pass.set_pipeline(&self.screen_hand_pipelines[blend + sampling]);
+                    pass.draw_indexed(0..6, (i * 4) as i32, 0..1);
+                }
+            }
             drop(pass);
             if let Some(hdr) = &self.hdr {
                 hdr.mark_hand(encoder, timing.as_mut());
@@ -11940,7 +11992,7 @@ impl Renderer {
                 timing.as_mut(),
             );
         }
-        if !frame.screen.is_empty() {
+        if !frame.screen.is_empty() && !screen_in_hand {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: view_target,
                 resolve_target: None,

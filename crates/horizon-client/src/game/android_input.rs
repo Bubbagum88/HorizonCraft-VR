@@ -171,6 +171,13 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
     if !touch.y {
         Y_LATCH.store(false, std::sync::atomic::Ordering::Relaxed);
     }
+    // Teleport movement: the left stick aims a teleport (`vr_teleport`), it walks only in
+    // water and on ladders.
+    let touch = if super::vr_teleport::stick_walks() {
+        touch
+    } else {
+        horizon_xr::Pad { left: [0.0; 2], ..touch }
+    };
     let touch = {
         let turn = horizon_xr::move_turn().to_radians();
         let (sin, cos) = turn.sin_cos();
@@ -819,6 +826,7 @@ impl super::Game<'_> {
         });
         let aim = aim.filter(|_| playing);
         let other = other.filter(|_| playing);
+        self.xr_teleport_frame(playing);
         horizon_xr::set_aim_points(if look_left { [aim, other] } else { [other, aim] });
         // Swimming goes where the head looks (the left stick's click sprints into a swim), and
         // food held at the mouth in water must not point the swim down.
