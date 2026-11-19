@@ -712,7 +712,9 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
             // Left by an older build's "PLAY 2D": the game would start without VR.
             new java.io.File(getFilesDir(), "launch-2d").delete();
             Intent i = new Intent(this, HorizonActivity.class);
-            i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            // Its own task (the manifest's taskAffinity): in this 2D panel's task the game's
+            // window opened on the panel's display and the VR session never got focus.
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
             startActivity(i);
             finish();
         } else if (v == driver) {
