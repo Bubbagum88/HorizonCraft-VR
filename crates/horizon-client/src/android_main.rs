@@ -90,6 +90,10 @@ fn android_main(app: AndroidApp) {
                 std::env::set_var("HORIZON_XR_SNAP", step.to_string());
             }
         }
+        if number("layout").is_some_and(|l| l == 1.0) && std::env::var_os("HORIZON_XR_LAYOUT").is_none() {
+            // SAFETY: still before the game starts its threads.
+            unsafe { std::env::set_var("HORIZON_XR_LAYOUT", "questcraft") };
+        }
         if number("teleport").is_some_and(|t| t != 0.0) && std::env::var_os("HORIZON_XR_MOVE").is_none() {
             // SAFETY: still before the game starts its threads.
             unsafe { std::env::set_var("HORIZON_XR_MOVE", "teleport") };

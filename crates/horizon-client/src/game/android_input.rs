@@ -159,6 +159,8 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
             Button::North,
         ),
         (touch.menu, Button::Start),
+        (touch.left_bumper, Button::LeftBumper),
+        (touch.right_bumper, Button::RightBumper),
         (touch.left_click, Button::LeftStick),
         (touch.right_click, Button::RightStick),
     ] {

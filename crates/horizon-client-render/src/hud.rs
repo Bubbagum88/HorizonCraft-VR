@@ -1533,6 +1533,10 @@ fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -
 }
 /// The GUI Scale option (0 = auto).
 pub static GUI_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The narrowest GUI the scale keeps, in GUI pixels: vanilla's 320, or more in VR, whose
+/// menu panel is the eye's image (taller than wide): there 320 left the recipe book too
+/// little room beside a menu (`widthTooNarrow`, 379) and it covered the menu.
+pub static MIN_GUI_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(320);
 /// One frame of overlay geometry in GUI pixels.
 pub struct HudBatch {
     pub vertices: Vec<HudVertex>,
@@ -1589,13 +1593,14 @@ pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
     u32::from(a) << 24 | u32::from(b) << 16 | u32::from(g) << 8 | u32::from(r)
 }
 impl HudBatch {
-    /// Window.calculateScale: the largest scale keeping >= 320x240 GUI pixels,
-    /// capped by the GUI Scale option (0 = auto).
+    /// Window.calculateScale: the largest scale keeping >= 320x240 GUI pixels
+    /// (`MIN_GUI_WIDTH` wide), capped by the GUI Scale option (0 = auto).
     pub fn new(window: [u32; 2]) -> Self {
         let limit = GUI_SCALE.load(std::sync::atomic::Ordering::Relaxed);
+        let min_width = MIN_GUI_WIDTH.load(std::sync::atomic::Ordering::Relaxed);
         let mut scale = 1;
         while (limit == 0 || scale < limit)
-            && window[0] / (scale + 1) >= 320
+            && window[0] / (scale + 1) >= min_width
             && window[1] / (scale + 1) >= 240
         {
             scale += 1;

@@ -94,6 +94,10 @@ pub struct Pad {
     pub right: [f32; 2],
     /// Left and right trigger, 0..1.
     pub triggers: [f32; 2],
+    /// The gamepad's bumpers (hotbar left and right): no Touch button, only a layout's
+    /// mapping gives them (`questcraft_layout`).
+    pub left_bumper: bool,
+    pub right_bumper: bool,
 }
 
 /// One eye of the frame being drawn, in Minecraft's world axes.
@@ -966,6 +970,9 @@ pub fn begin_frame() -> Option<FrameViews> {
             }
             pad.right[0] = 0.0;
         }
+        if questcraft_layout() {
+            pad = questcraft_pad(pad, s.menu_open);
+        }
         s.pad = pad;
         s.stats.pad = Some(read.map_err(|e| e.to_string()));
     }
@@ -1232,6 +1239,42 @@ pub fn snap_turn_step() -> Option<f32> {
                 .unwrap_or(30.0)
         })
     })
+}
+
+/// The QuestCraft layout (`HORIZON_XR_LAYOUT=questcraft`, the launcher's Controls button).
+pub fn questcraft_layout() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_XR_LAYOUT").as_deref() == Ok("questcraft"))
+}
+
+/// The Touch buttons as QuestCraft lays them out, given as the buttons the game's own layout
+/// reads (A jumps, Y the inventory, the menu button pauses, the stick clicks sprint and
+/// sneak, the grips' and X's own uses are `xr_buttons`'):
+/// - A jumps, Y opens the inventory (and closes it), X pauses (as the menu button);
+/// - in play the left grip held crouches and the right grip held sprints, and the right
+///   stick pushed up or down changes the hotbar slot, once a push (up the next slot);
+/// - in a menu the grips keep their uses there, and B puts one item down, as the right grip.
+fn questcraft_pad(raw: Pad, menu: bool) -> Pad {
+    let mut pad = Pad {
+        a: raw.a,
+        b: false,
+        x: false,
+        y: raw.y,
+        menu: raw.menu || raw.x,
+        ..raw
+    };
+    if menu {
+        pad.right_grip = raw.right_grip || raw.b;
+    } else {
+        pad.left_click = raw.left_click || raw.right_grip;
+        pad.right_click = raw.right_click || raw.left_grip;
+        pad.left_grip = false;
+        pad.right_grip = false;
+        pad.right_bumper = raw.right[1] > 0.7;
+        pad.left_bumper = raw.right[1] < -0.7;
+        pad.right[1] = 0.0;
+    }
+    pad
 }
 
 /// Whether the left stick teleports instead of walking (`HORIZON_XR_MOVE=teleport`).
@@ -2006,6 +2049,8 @@ impl Actions {
             left: stick(0)?,
             right: stick(1)?,
             triggers: [f(&self.triggers[0])?, f(&self.triggers[1])?],
+            left_bumper: false,
+            right_bumper: false,
         })
     }
 }

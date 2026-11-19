@@ -7650,6 +7650,9 @@ impl Renderer {
             return result.map(|_| false);
         };
         let [width, height] = xr.size;
+        // The menu panel is the eye's image: wide enough a GUI for the recipe book beside a
+        // menu (`hud::MIN_GUI_WIDTH`).
+        crate::hud::MIN_GUI_WIDTH.store(400, std::sync::atomic::Ordering::Relaxed);
         if [self.config.width, self.config.height] != [width, height] {
             self.resize(width, height);
         }
