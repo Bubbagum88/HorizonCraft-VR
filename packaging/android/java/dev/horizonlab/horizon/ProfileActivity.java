@@ -712,10 +712,15 @@ public class ProfileActivity extends Activity implements View.OnClickListener {
             // Left by an older build's "PLAY 2D": the game would start without VR.
             new java.io.File(getFilesDir(), "launch-2d").delete();
             Intent i = new Intent(this, HorizonActivity.class);
-            // Its own task (the manifest's taskAffinity): in this 2D panel's task the game's
-            // window opened on the panel's display and the VR session never got focus.
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            startActivity(i);
+            // A fresh task of its own (the manifest's taskAffinity) on the headset's main display.
+            // Started from this 2D panel, Quest put the game's window on the panel's virtual
+            // display (Quest 1 log: "Display #1085"), even in a new task, and the VR session
+            // never got focus: flat, no controllers. Started on display 0 (as `am start` from
+            // the shell does) it gets focus. As github.com/amwatson/2DVrHybrid does.
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            android.app.ActivityOptions options = android.app.ActivityOptions.makeBasic();
+            options.setLaunchDisplayId(android.view.Display.DEFAULT_DISPLAY);
+            startActivity(i, options.toBundle());
             finish();
         } else if (v == driver) {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);

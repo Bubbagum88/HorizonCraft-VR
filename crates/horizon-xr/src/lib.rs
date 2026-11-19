@@ -21,7 +21,6 @@ use ash::vk::{self, Handle};
 use glam::{Quat, Vec3};
 use openxr as xr;
 use std::ffi::{CStr, CString, c_void};
-use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 use wgpu::hal::api::Vulkan;
@@ -139,9 +138,6 @@ pub struct FrameViews {
 struct Context {
     vm: usize,
     activity: usize,
-    /// Where `xr.pending` is kept: a launch whose session never got focus leaves it,
-    /// and the next launch starts flat.
-    marker_dir: PathBuf,
 }
 static CONTEXT: OnceLock<Context> = OnceLock::new();
 
@@ -379,16 +375,11 @@ pub fn note_draw(outcome: &'static str) {
 /// # Safety
 /// `vm` must be the process's `JavaVM` and `activity` a JNI reference to the activity
 /// that will run the game, both valid for the rest of the process.
-pub unsafe fn set_android_context(vm: *mut c_void, activity: *mut c_void, marker_dir: PathBuf) {
+pub unsafe fn set_android_context(vm: *mut c_void, activity: *mut c_void) {
     let _ = CONTEXT.set(Context {
         vm: vm as usize,
         activity: activity as usize,
-        marker_dir,
     });
-}
-
-fn marker() -> Option<PathBuf> {
-    CONTEXT.get().map(|c| c.marker_dir.join("xr.pending"))
 }
 
 /// Whether a VR session drives the frames (its device is open).
@@ -421,13 +412,8 @@ pub fn instance_and_adapter() -> Option<(wgpu::Instance, wgpu::Adapter)> {
     if xr_state().is_some() {
         return None;
     }
-    if let Some(marker) = marker()
-        && marker.exists()
-    {
-        let _ = std::fs::remove_file(&marker);
-        log::warn!("Horizon VR: the last VR launch never got focus; starting flat this time");
-        return None;
-    }
+    // No flat fallback after a launch that never got focus (the old `xr.pending`): on a
+    // Quest 1 it turned every second launch flat. A headset always starts in VR.
     match open_instance(ctx) {
         Ok(opened) => Some(opened),
         Err(e) => {
@@ -576,9 +562,6 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
         session: None,
         sharpen: available.fb_composition_layer_settings,
     });
-    if let Some(marker) = marker() {
-        let _ = std::fs::write(marker, b"1");
-    }
     log::info!("Horizon VR: Vulkan {xr_version} instance ready through OpenXR");
     Ok((wgpu_instance, adapter))
 }
@@ -1811,10 +1794,6 @@ fn poll_events(instance: &xr::Instance, s: &mut Session) {
                     }
                     xr::SessionState::FOCUSED => {
                         s.focused = true;
-                        // VR got going: the next launch starts in VR again.
-                        if let Some(marker) = marker() {
-                            let _ = std::fs::remove_file(marker);
-                        }
                     }
                     xr::SessionState::VISIBLE => s.focused = false,
                     xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
