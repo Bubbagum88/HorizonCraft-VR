@@ -26,6 +26,8 @@ const THREADS: usize = 8;
 #[derive(Default, Clone)]
 struct Status {
     stage: String,
+    /// What the stage is doing now, in words (the preparer's last step), for the screen.
+    detail: String,
     running: bool,
     done: bool,
     error: String,
@@ -33,6 +35,9 @@ struct Status {
 
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
 static FILES_DONE: AtomicUsize = AtomicUsize::new(0);
+/// How many stages this setup has, for "step N of M": six, nine once the device makes the
+/// Horizon data itself (java, libraries, prepare).
+static STAGES: AtomicUsize = AtomicUsize::new(6);
 static FILES_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static BYTES_DONE: AtomicU64 = AtomicU64::new(0);
 static BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -43,7 +48,10 @@ fn set(f: impl FnOnce(&mut Status)) {
 }
 fn stage(text: &str) {
     log::info!("setup: {text}");
-    set(|s| s.stage = text.into());
+    set(|s| {
+        s.stage = text.into();
+        s.detail.clear();
+    });
 }
 fn counters(files: usize, bytes: u64) {
     FILES_DONE.store(0, Ordering::SeqCst);
@@ -230,6 +238,7 @@ fn version_json(agent: &ureq::Agent, lock: &Value) -> Result<(Value, Vec<u8>), S
 }
 
 fn run(home: &Path, derived: &str) -> Result<(), String> {
+    STAGES.store(6, Ordering::Relaxed);
     let lock: Value = serde_json::from_str(LOCK).map_err(|e| e.to_string())?;
     let resources = std::env::var_os("HORIZON_RESOURCES")
         .map(PathBuf::from)
@@ -519,6 +528,7 @@ fn derive_on_device(
     version_bytes: &[u8],
     client_jar: &Path,
 ) -> Result<PathBuf, String> {
+    STAGES.store(9, Ordering::Relaxed);
     stage("java");
     let apk = apk_path().ok_or("cannot find this app's APK")?;
     // The runtime runs from internal storage; an earlier copy in shared storage goes.
@@ -579,7 +589,16 @@ fn derive_on_device(
         },
         output: Some(work.join("prepared")),
     };
-    let log = |line: &str| log::info!("Horizon setup: prepare: {line}");
+    // Each step the preparer logs is shown under the bar: it runs for minutes, and its
+    // fraction alone looked stuck between steps.
+    let log = |line: &str| {
+        log::info!("Horizon setup: prepare: {line}");
+        let line = line.trim();
+        if !line.is_empty() {
+            let shown: String = line.chars().take(90).collect();
+            set(|s| s.detail = shown);
+        }
+    };
     let progress = |fraction: f32| FILES_DONE.store((fraction.clamp(0.0, 1.0) * 100.0) as usize, Ordering::Relaxed);
     let prepared = horizon_prepare::prepare_with_progress(&options, &log, &progress)?;
     let zip = work.join("derived.zip");
@@ -705,14 +724,16 @@ extern "system" fn Java_dev_horizonlab_horizon_SetupActivity_nativeStatus<'a>(
         "idle"
     };
     let text = format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         s.stage,
         FILES_DONE.load(Ordering::Relaxed),
         FILES_TOTAL.load(Ordering::Relaxed),
         BYTES_DONE.load(Ordering::Relaxed),
         BYTES_TOTAL.load(Ordering::Relaxed),
         state,
-        s.error.replace('\t', " ")
+        s.error.replace('\t', " "),
+        s.detail.replace('\t', " "),
+        STAGES.load(Ordering::Relaxed)
     );
     env.new_string(text).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }

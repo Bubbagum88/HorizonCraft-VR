@@ -38,9 +38,19 @@ jobs:
             --min-sdk-version 26 --target-sdk-version 35 "$OUT/res.zip"
           (cd "$OUT" && zip -q ../base.apk classes.dex)
           unzip -l base.apk
-          sha256sum base.apk
+          # The same for Quest 2, Pro, 3 and 3S: the manifest names the headsets the Quest 1
+          # runtime doesn't know (it aborts on them), so they get an APK of their own.
+          sed 's/android:value="quest|quest2"/android:value="quest2|questpro|quest3|quest3s"/' \
+            packaging/android/AndroidManifest.xml > "$OUT/AndroidManifest-quest3.xml"
+          grep -q 'quest2|questpro|quest3|quest3s' "$OUT/AndroidManifest-quest3.xml"
+          "$BT/aapt2" link -o base-quest3.apk --manifest "$OUT/AndroidManifest-quest3.xml" -I "$PLATFORM" \
+            --min-sdk-version 26 --target-sdk-version 35 "$OUT/res.zip"
+          (cd "$OUT" && zip -q ../base-quest3.apk classes.dex)
+          sha256sum base.apk base-quest3.apk
       - uses: actions/upload-artifact@v4
         with:
           name: apk-base-${{ github.sha }}
-          path: base.apk
+          path: |
+            base.apk
+            base-quest3.apk
           retention-days: 30

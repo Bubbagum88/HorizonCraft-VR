@@ -182,6 +182,13 @@ public class SetupActivity extends Activity
         handler.post(this);
     }
 
+    /** The stage's place in the setup's order (the last three only when the device makes the data). */
+    static int stepNumber(String s) {
+        String[] order = {"version", "client", "index", "extract", "assets", "derived", "java", "libraries", "prepare"};
+        for (int i = 0; i < order.length; i++) if (order[i].equals(s)) return i + 1;
+        return 0;
+    }
+
     static String stageName(String s) {
         if (s.equals("version") || s.equals("index")) return Ui.t("Подготовка", "Preparing");
         if (s.equals("client")) return Ui.t("Скачивание игры", "Downloading the game");
@@ -256,13 +263,25 @@ public class SetupActivity extends Activity
         if (bytesTotal > 0) {
             permille = (int) (1000 * bytes / Math.max(1, bytesTotal));
             line = (bytes >> 20) + " / " + (bytesTotal >> 20) + Ui.t(" МБ", " MB");
-            if (speed > 1024) line += "  ·  " + String.format(java.util.Locale.ROOT, "%.1f", speed / 1048576) + Ui.t(" МБ/с", " MB/s");
+            if (speed > 1024) {
+                line += "  ·  " + String.format(java.util.Locale.ROOT, "%.1f", speed / 1048576) + Ui.t(" МБ/с", " MB/s");
+                // Time left at the current speed, once it is known.
+                long left = (long) ((bytesTotal - bytes) / speed);
+                if (left > 0) line += "  ·  " + (left >= 60 ? (left / 60) + Ui.t(" мин", " min") : left + Ui.t(" с", " s")) + Ui.t(" осталось", " left");
+            }
         } else if (filesTotal > 0) {
             permille = (int) (1000 * files / Math.max(1, filesTotal));
             line = files + " / " + filesTotal + Ui.t(" файлов", " files");
         }
+        // What the stage is doing now (the preparer's step), under the numbers.
+        String now_doing = p.length > 7 ? p[7].trim() : "";
+        if (!now_doing.isEmpty()) line = line.isEmpty() ? now_doing : line + "\n" + now_doing;
+        // Which stage of how many, so a bar starting again from 0% reads as progress.
+        int step = stepNumber(p[0]);
+        String steps = p.length > 8 ? p[8].trim() : "";
+        String of = step > 0 && !steps.isEmpty() ? Ui.t("Шаг ", "Step ") + step + Ui.t(" из ", " of ") + steps + "  ·  " : "";
         bar.set(permille);
-        stage.setText(stageName(p[0]) + "  " + (permille / 10) + "%");
+        stage.setText(of + stageName(p[0]) + "  " + (permille / 10) + "%");
         detail.setText(line);
         if (p[5].equals("done")) {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
