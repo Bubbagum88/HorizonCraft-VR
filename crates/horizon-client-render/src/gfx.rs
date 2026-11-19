@@ -13507,11 +13507,61 @@ mod tests {
             assert!(!shown(false));
         }
     }
-    /// Every WGSL shader file translates to HLSL as wgpu's DirectX 12 backend
-    /// writes it for FXC (shader model 5.1), entry point by entry point, and
-    /// every shader the OpenGL backend runs also translates to GLSL.
+    /// No shader asks a storage buffer's length (`OpArrayLength`) once wgpu-hal leaves buffer
+    /// bounds to `robustBufferAccess` (`Workarounds::NO_ARRAY_LENGTH`): Adreno 5xx drivers (the
+    /// Quest 1's) crash in vkCmdDraw*/vkCmdDispatch on a pipeline that does, and report 0 for
+    /// every storage buffer of a set but the first.
     #[test]
-    fn shaders_translate_to_hlsl_for_directx_12_and_glsl_for_opengl() {
+    fn shaders_ask_no_buffer_length_without_bounds_checks() {
+        let mut checked = 0;
+        for (path, text) in shader_sources() {
+            let module = naga::front::wgsl::parse_str(&text)
+                .or_else(|_| {
+                    naga::front::wgsl::parse_str(&(crate::overlay::wgsl_constants() + &text))
+                })
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let info = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            // Overrides take their defaults, as a pipeline that sets none.
+            let (module, info) = naga::back::pipeline_constants::process_overrides(
+                &module,
+                &info,
+                None,
+                &Default::default(),
+            )
+            .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            let mut options = naga::back::spv::Options::default();
+            options.bounds_check_policies = naga::proc::BoundsCheckPolicies {
+                index: naga::proc::BoundsCheckPolicy::Restrict,
+                buffer: naga::proc::BoundsCheckPolicy::Unchecked,
+                image_load: naga::proc::BoundsCheckPolicy::Restrict,
+                binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
+            };
+            let words = naga::back::spv::write_vec(&module, &info, &options, None)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+            // Instructions after the 5-word header: word count in the high half, opcode low.
+            let mut at = 5;
+            while at < words.len() {
+                const OP_ARRAY_LENGTH: u32 = 68;
+                assert_ne!(
+                    words[at] & 0xffff,
+                    OP_ARRAY_LENGTH,
+                    "{}: asks a buffer's length (arrayLength)",
+                    path.display()
+                );
+                at += (words[at] >> 16).max(1) as usize;
+            }
+            checked += 1;
+        }
+        assert!(checked >= 10, "{checked}");
+    }
+    /// Every WGSL shader file as the game compiles it: the files appended to another
+    /// (`oit.wgsl`'s users, `visbuffer.wgsl`, `static_entity.wgsl`) with what they follow.
+    fn shader_sources() -> Vec<(std::path::PathBuf, String)> {
         fn wgsl_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
@@ -13558,6 +13608,14 @@ mod tests {
                 sources.push((path, text));
             }
         }
+        sources
+    }
+    /// Every WGSL shader file translates to HLSL as wgpu's DirectX 12 backend
+    /// writes it for FXC (shader model 5.1), entry point by entry point, and
+    /// every shader the OpenGL backend runs also translates to GLSL.
+    #[test]
+    fn shaders_translate_to_hlsl_for_directx_12_and_glsl_for_opengl() {
+        let sources = shader_sources();
         let mut glsl_checked = 0;
         // Shaders the OpenGL backend runs must translate: skipping the ones
         // that fail hides exactly the bug where a shader GL needs cannot

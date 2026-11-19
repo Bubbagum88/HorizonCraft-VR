@@ -331,7 +331,12 @@ fn plan(
         }
         total += u64::from(d[0]);
     }
-    for (source, list) in by_source {
+    for (source, mut list) in by_source {
+        // `flatten.wgsl` runs one workgroup per range, `GROUP_LIMIT` to a row: past one row,
+        // empty ranges (no indices) fill the last, so the dispatch covers the group exactly.
+        if list.len() > GROUP_LIMIT as usize {
+            list.resize(list.len().next_multiple_of(GROUP_LIMIT as usize), [0; 4]);
+        }
         segments.push((source, ranges.len() as u64, list.len() as u64));
         ranges.extend(list);
         let padded = (ranges.len() as u64).next_multiple_of(align);

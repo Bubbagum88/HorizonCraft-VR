@@ -73,10 +73,10 @@ fn skin(
     @builtin(num_workgroups) groups: vec3<u32>,
     @builtin(local_invocation_index) lane: u32,
 ) {
+    // `dispatch_jobs` launches one workgroup per staged job (padding jobs included, which
+    // write nothing) and `jobs` holds them all: no bound to test. No `arrayLength`: Adreno
+    // 5xx drivers crash on it (wgpu-hal `Workarounds::NO_ARRAY_LENGTH`).
     let job = group.y * groups.x + group.x;
-    if job >= arrayLength(&jobs) / JOB_WORDS {
-        return;
-    }
     let j = job * JOB_WORDS;
     let first = jobs[j];
     let count = jobs[j + 1u];

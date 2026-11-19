@@ -463,6 +463,14 @@ bitflags::bitflags!(
         /// As such, we need to make sure all calls to vkCmdFillBuffer are aligned to 16 bytes
         /// if they cover a range of 4096 bytes or more.
         const FORCE_FILL_BUFFER_WITH_SIZE_GREATER_4096_ALIGNED_OFFSET_16 = 0x4;
+        /// Horizon: Qualcomm's Adreno 5xx driver (Quest 1, driver 512.555) crashes in
+        /// vkCmdDraw*/vkCmdDispatch when a shader reads a storage buffer's length
+        /// (`OpArrayLength`): it looks each bound storage buffer up in a table sized by the
+        /// lengths the shader asked for, with no bounds check, and reports a length only
+        /// for the first storage buffer of a set (0 for the others). With
+        /// `robustBufferAccess` on, buffer accesses are left to it instead of Naga's
+        /// `Restrict` clamps, which ask for those lengths.
+        const NO_ARRAY_LENGTH = 0x8;
     }
 );
 

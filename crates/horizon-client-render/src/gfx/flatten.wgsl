@@ -13,6 +13,9 @@ struct Range {
 }
 const QUADS: u32 = 0xffffffffu;
 const GROUP: u32 = 64u;
+// Each group's dispatch covers exactly its ranges (`plan` pads a group of more than one row
+// of workgroups to whole rows with empty ranges), so `r` needs no bound. No `arrayLength`:
+// Adreno 5xx drivers crash on it (wgpu-hal `Workarounds::NO_ARRAY_LENGTH`).
 @group(0) @binding(0) var<storage, read> ranges: array<Range>;
 @group(0) @binding(1) var<storage, read> sorted: array<u32>;
 @group(0) @binding(2) var<storage, read_write> out: array<u32>;
@@ -27,9 +30,6 @@ fn quad(k: u32) -> u32 {
 fn flatten(@builtin(workgroup_id) group: vec3<u32>,
     @builtin(local_invocation_index) lane: u32) {
     let r = group.y * 65535u + group.x;
-    if r >= arrayLength(&ranges) {
-        return;
-    }
     let d = ranges[r];
     for (var k = lane; k < d.count; k += GROUP) {
         var i: u32;
@@ -55,9 +55,6 @@ var<workgroup> start: u32;
 fn flatten_seen(@builtin(workgroup_id) group: vec3<u32>,
     @builtin(local_invocation_index) lane: u32) {
     let r = group.y * 65535u + group.x;
-    if r >= arrayLength(&ranges) {
-        return;
-    }
     let d = ranges[r];
     if lane == 0u {
         var s = UNSEEN;

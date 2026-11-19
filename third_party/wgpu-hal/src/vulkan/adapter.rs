@@ -2305,6 +2305,12 @@ impl super::Instance {
                 super::Workarounds::FORCE_FILL_BUFFER_WITH_SIZE_GREATER_4096_ALIGNED_OFFSET_16,
                 phd_capabilities.properties.vendor_id == db::nvidia::VENDOR,
             );
+            // Adreno 5xx device ids are 0x05xxxxxx (Adreno 540: 0x05040001).
+            workarounds.set(
+                super::Workarounds::NO_ARRAY_LENGTH,
+                phd_capabilities.properties.vendor_id == db::qualcomm::VENDOR
+                    && phd_capabilities.properties.device_id >> 24 == 5,
+            );
         };
 
         if let Some(driver) = phd_capabilities.driver {
@@ -2837,7 +2843,10 @@ impl super::Adapter {
                 capabilities: Some(capabilities.iter().cloned().collect()),
                 bounds_check_policies: naga::proc::BoundsCheckPolicies {
                     index: naga::proc::BoundsCheckPolicy::Restrict,
-                    buffer: if self.private_caps.robust_buffer_access2 {
+                    buffer: if self.private_caps.robust_buffer_access2
+                        || (self.private_caps.robust_buffer_access
+                            && self.workarounds.contains(super::Workarounds::NO_ARRAY_LENGTH))
+                    {
                         naga::proc::BoundsCheckPolicy::Unchecked
                     } else {
                         naga::proc::BoundsCheckPolicy::Restrict
