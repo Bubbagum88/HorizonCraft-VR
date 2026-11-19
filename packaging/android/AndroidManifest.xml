@@ -40,7 +40,9 @@
         android:extractNativeLibs="true"
         android:largeHeap="true"
         android:theme="@style/HorizonGame">
-        <meta-data android:name="com.oculus.supportedDevices" android:value="quest|quest2|questpro|quest3|quest3s" />
+        <!-- Quest 1 build: its VR runtime aborts at xrCreateInstance on a name it doesn't
+             know ("Unknown device to support: quest3"), so only the names it knows. -->
+        <meta-data android:name="com.oculus.supportedDevices" android:value="quest|quest2" />
         <profileable android:shell="true" />
         <activity
             android:name=".SetupActivity"
