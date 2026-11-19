@@ -29,9 +29,14 @@ use wgpu::hal::vulkan as hv;
 /// Eye images are drawn at this fraction of the runtime's recommended size: the game
 /// is drawn twice per frame, and the Quest's recommended size is large.
 const RESOLUTION_SCALE: f32 = 0.8;
-/// The farthest the head may lean away from where it started before the view stops
-/// following it, in metres (the player's body does not move with it).
+/// The farthest the head may lean away from where it started, sideways or up, before the
+/// view stops following it, in metres (the player's body does not move with it): no leaning
+/// through a wall.
 const MAX_LEAN: f32 = 0.5;
+/// How far down the view follows a crouching head, in metres: down to 0.17 m above the
+/// feet even while sneaking (eyes at 1.27 m), never into the floor, so a real crouch to
+/// mine or look under something gets there.
+const MAX_CROUCH: f32 = 1.1;
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 /// Menus show on a panel this far in front of where the head faced when they opened, and
 /// this wide, in metres.
@@ -1017,8 +1022,11 @@ pub fn begin_frame() -> Option<FrameViews> {
     let head_position = vec3(head.pose.position);
     s.head = Some((head_rotation, head_position));
     let anchor = *s.anchor.get_or_insert(head_position);
-    // Leaning moves the view, up to MAX_LEAN from where the head started.
-    let lean = (head_position - anchor).clamp_length_max(MAX_LEAN);
+    // Leaning moves the view, up to MAX_LEAN from where the head started sideways and up,
+    // and crouching down to MAX_CROUCH.
+    let moved = head_position - anchor;
+    let sideways = Vec3::new(moved.x, 0.0, moved.z).clamp_length_max(MAX_LEAN);
+    let lean = Vec3::new(sideways.x, moved.y.clamp(-MAX_CROUCH, MAX_LEAN), sideways.z);
     let body = body_rotation(s.body_yaw);
     let now = state.predicted_display_time.as_nanos();
     if let Some((yaw, at, _)) = s.drawn
@@ -1109,15 +1117,11 @@ pub fn begin_frame() -> Option<FrameViews> {
     };
     s.wrist_slot = hover.map(|(slot, _)| slot);
     s.wrist_point = hover.map(|(_, at)| at);
-    // The left stick walks where the head faces, not where the right hand aims (the
-    // player's yaw follows the aim, for picking blocks).
-    let look_hand = if s.look_left { Hand::LeftAim } else { Hand::RightAim };
-    s.move_turn = match s.hands[look_hand as usize] {
-        Some((aim, _)) => wrap_degrees(
-            yaw_pitch(body * head_rotation).0 - yaw_pitch(body * aim).0,
-        ),
-        None => 0.0,
-    };
+    // The left stick walks where the head faces: the player faces there too (`look`), but
+    // not while the game turns the player itself (toward a mob being hit, a bow's aim).
+    s.move_turn = s
+        .last_yaw
+        .map_or(0.0, |yaw| wrap_degrees(yaw_pitch(body * head_rotation).0 - yaw));
     s.menu_world = s.menu_open.then_some(s.menu_pose).flatten().map(|panel| {
         (
             body * quat(panel.orientation),
@@ -1813,13 +1817,10 @@ pub fn sync_yaw(yaw: f32) {
 pub fn look(yaw: f32) -> Option<(f32, f32)> {
     let mut guard = xr_state();
     let s = guard.as_mut()?.session.as_mut()?;
-    // The player looks where the right controller points (blocks are aimed at with it),
-    // where the head does while it is not tracked.
-    let aim = if s.look_left { Hand::LeftAim } else { Hand::RightAim };
-    let head = match s.hands[aim as usize] {
-        Some((rotation, _)) if !s.look_head => rotation,
-        _ => s.head?.0,
-    };
+    // The player faces where the head looks: the camera, what faces it (name tags,
+    // particles), sounds and the head other players see. The right controller only aims
+    // (the game's pick, `xr_aim_dir`).
+    let head = s.head?.0;
     if s.menu_open {
         // The menu stays where it is; the player turns to the head once it closes.
         return None;

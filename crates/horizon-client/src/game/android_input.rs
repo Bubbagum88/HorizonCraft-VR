@@ -740,6 +740,16 @@ impl super::Game<'_> {
         let aiming = bow.0 || bow.2.is_some_and(|t| now < t);
         aiming.then(|| [0, 1, 2].map(|i| eye[i] + bow.1[i] * 10.0))
     }
+    /// VR: where the game's pick points, along the right controller (the player faces where
+    /// the head looks). None while a swing or a bow turned the player to its target, whose
+    /// facing the pick then follows, or while the controller isn't tracked (the head's).
+    pub(super) fn xr_aim_dir(&self) -> Option<[f64; 3]> {
+        if !horizon_xr::active() || GESTURE.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let (yaw, pitch) = horizon_xr::hand_angles(false)?;
+        Some(super::pick_view_vector(yaw, pitch))
+    }
     pub(super) fn xr_look(&mut self) {
         horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
         self.xr_swim();

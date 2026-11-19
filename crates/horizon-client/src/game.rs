@@ -3785,6 +3785,12 @@ impl Game<'_> {
         if let Some(dir) = self.touch_aim_dir() {
             return Some((self.eye_position()?, dir));
         }
+        // VR: the player faces where the head looks; blocks and mobs are aimed at with the
+        // right controller.
+        #[cfg(target_os = "android")]
+        if let Some(dir) = self.xr_aim_dir() {
+            return Some((self.eye_position()?, dir));
+        }
         Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
     }
     /// `Player.blockInteractionRange`: the block pick's and mining's reach.
