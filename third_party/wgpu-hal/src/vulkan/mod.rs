@@ -29,6 +29,8 @@ mod command;
 pub mod conv;
 mod descriptor;
 mod device;
+/// Horizon: the pipeline cache kept on disk between runs.
+pub mod disk_cache;
 mod drm;
 mod instance;
 mod sampler;
@@ -461,6 +463,14 @@ bitflags::bitflags!(
         /// As such, we need to make sure all calls to vkCmdFillBuffer are aligned to 16 bytes
         /// if they cover a range of 4096 bytes or more.
         const FORCE_FILL_BUFFER_WITH_SIZE_GREATER_4096_ALIGNED_OFFSET_16 = 0x4;
+        /// Horizon: Qualcomm's Adreno 5xx driver (Quest 1, driver 512.555) crashes in
+        /// vkCmdDraw*/vkCmdDispatch when a shader reads a storage buffer's length
+        /// (`OpArrayLength`): it looks each bound storage buffer up in a table sized by the
+        /// lengths the shader asked for, with no bounds check, and reports a length only
+        /// for the first storage buffer of a set (0 for the others). With
+        /// `robustBufferAccess` on, buffer accesses are left to it instead of Naga's
+        /// `Restrict` clamps, which ask for those lengths.
+        const NO_ARRAY_LENGTH = 0x8;
     }
 );
 
@@ -513,6 +523,8 @@ struct DeviceShared {
     extension_fns: DeviceExtensionFunctions,
     vendor_id: u32,
     pipeline_cache_validation_key: [u8; 16],
+    /// Horizon: the pipeline cache from [`disk_cache::set_file`]'s file.
+    disk_cache: Option<disk_cache::DiskCache>,
     timestamp_period: f32,
     private_caps: PrivateCapabilities,
     workarounds: Workarounds,
@@ -545,6 +557,9 @@ impl Drop for DeviceShared {
             self.raw
                 .destroy_descriptor_set_layout(self.empty_descriptor_set_layout, None)
         };
+        if let Some(cache) = &self.disk_cache {
+            cache.close(&self.raw);
+        }
         if self.drop_guard.is_none() {
             unsafe { self.raw.destroy_device(None) };
         }

@@ -1,0 +1,56 @@
+# Builds the APK's Java side as build_apk.sh does: classes.dex, and the manifest and
+# resources linked by aapt2 (base.apk, unsigned, no library). Put into an installed APK
+# together with libhorizon.so (android-lib.yml); the rest (the Java runtime, the preparer,
+# the OpenXR loader) comes from that APK.
+name: Android Java
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**", "quest1/**"]
+    paths:
+      - "packaging/android/**"
+      - ".github/workflows/android-java.yml"
+
+concurrency:
+  group: android-java-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build base.apk
+        run: |
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)"
+          PLATFORM="$ANDROID_HOME/platforms/android-35/android.jar"
+          if [ ! -f "$PLATFORM" ]; then
+            yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" > /dev/null
+          fi
+          OUT=out && mkdir -p "$OUT/classes"
+          javac --release 8 -nowarn -classpath "$PLATFORM" -d "$OUT/classes" \
+            $(find packaging/android/java -name '*.java')
+          "$BT/d8" --min-api 26 --lib "$PLATFORM" --output "$OUT" $(find "$OUT/classes" -name '*.class')
+          "$BT/aapt2" compile --dir packaging/android/res -o "$OUT/res.zip"
+          "$BT/aapt2" link -o base.apk --manifest packaging/android/AndroidManifest.xml -I "$PLATFORM" \
+            --min-sdk-version 26 --target-sdk-version 35 "$OUT/res.zip"
+          (cd "$OUT" && zip -q ../base.apk classes.dex)
+          unzip -l base.apk
+          # The same for Quest 2, Pro, 3 and 3S: the manifest names the headsets the Quest 1
+          # runtime doesn't know (it aborts on them), so they get an APK of their own.
+          sed 's/android:value="quest|quest2"/android:value="quest2|questpro|quest3|quest3s"/' \
+            packaging/android/AndroidManifest.xml > "$OUT/AndroidManifest-quest3.xml"
+          grep -q 'quest2|questpro|quest3|quest3s' "$OUT/AndroidManifest-quest3.xml"
+          "$BT/aapt2" link -o base-quest3.apk --manifest "$OUT/AndroidManifest-quest3.xml" -I "$PLATFORM" \
+            --min-sdk-version 26 --target-sdk-version 35 "$OUT/res.zip"
+          (cd "$OUT" && zip -q ../base-quest3.apk classes.dex)
+          sha256sum base.apk base-quest3.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-base-${{ github.sha }}
+          path: |
+            base.apk
+            base-quest3.apk
+          retention-days: 30

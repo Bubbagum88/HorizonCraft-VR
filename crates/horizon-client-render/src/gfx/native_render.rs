@@ -42,6 +42,13 @@ pub fn world_drawn_hooked() -> bool {
             .is_some_and(|renderers| !renderers.is_empty())
 }
 
+/// Whether [`native_hand_drawn`] may draw: a trait mod renderer is installed.
+pub fn hand_drawn_hooked() -> bool {
+    RENDERERS
+        .get()
+        .is_some_and(|renderers| !renderers.is_empty())
+}
+
 /// What a mod can draw with once the world is drawn: after the sky, terrain, entities,
 /// particles, weather and the world post pass, before the first-person hand ([`HandDrawn`]),
 /// the HUD and the screens. `color` holds the world's picture (copy it out before reading it: it is the target

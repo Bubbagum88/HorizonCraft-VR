@@ -10,6 +10,7 @@
 //! touch controls can hide.
 use horizon_client::gamepad::{Button, PadState};
 use std::sync::Mutex;
+use winit::platform::android::activity::InputStatus;
 use winit::platform::android::activity::input::{Axis, InputEvent, KeyAction, Keycode, MotionAction};
 
 /// `InputDevice.SOURCE_*` bits.
@@ -86,6 +87,26 @@ fn shared() -> std::sync::MutexGuard<'static, Shared> {
 /// Route input events through [`filter`]; called once before the event loop starts.
 pub(super) fn install() {
     winit::platform::android::set_input_filter(filter);
+    winit::platform::android::activity::set_busy_input_handler(answer_while_busy);
+}
+
+/// An event the game's thread left unread for 1 s while busy (building a renderer, opening
+/// the VR session), answered on android-activity's watchdog thread: Android shows "not
+/// responding" for input left unanswered for 5 s, and on a headset that box takes the VR
+/// session's focus. Controller events still go through [`filter`], so the pad state stays
+/// current; the rest are dropped as handled, but volume keys, which go back to the system.
+fn answer_while_busy(event: &InputEvent<'_>) -> InputStatus {
+    if filter(event) {
+        return InputStatus::Handled;
+    }
+    match event {
+        InputEvent::KeyEvent(key)
+            if matches!(key.key_code(), Keycode::VolumeUp | Keycode::VolumeDown | Keycode::VolumeMute) =>
+        {
+            InputStatus::Unhandled
+        }
+        _ => InputStatus::Handled,
+    }
 }
 
 /// The controller as the game reads it.
@@ -138,6 +159,8 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
             Button::North,
         ),
         (touch.menu, Button::Start),
+        (touch.left_bumper, Button::LeftBumper),
+        (touch.right_bumper, Button::RightBumper),
         (touch.left_click, Button::LeftStick),
         (touch.right_click, Button::RightStick),
     ] {
@@ -150,6 +173,13 @@ fn with_touch_controllers(mut pad: PadState, touch: horizon_xr::Pad) -> PadState
     if !touch.y {
         Y_LATCH.store(false, std::sync::atomic::Ordering::Relaxed);
     }
+    // Teleport movement: the left stick aims a teleport (`vr_teleport`), it walks only in
+    // water and on ladders.
+    let touch = if super::vr_teleport::stick_walks() {
+        touch
+    } else {
+        horizon_xr::Pad { left: [0.0; 2], ..touch }
+    };
     let touch = {
         let turn = horizon_xr::move_turn().to_radians();
         let (sin, cos) = turn.sin_cos();
@@ -710,6 +740,16 @@ impl super::Game<'_> {
         let aiming = bow.0 || bow.2.is_some_and(|t| now < t);
         aiming.then(|| [0, 1, 2].map(|i| eye[i] + bow.1[i] * 10.0))
     }
+    /// VR: where the game's pick points, along the right controller (the player faces where
+    /// the head looks). None while a swing or a bow turned the player to its target, whose
+    /// facing the pick then follows, or while the controller isn't tracked (the head's).
+    pub(super) fn xr_aim_dir(&self) -> Option<[f64; 3]> {
+        if !horizon_xr::active() || GESTURE.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        let (yaw, pitch) = horizon_xr::hand_angles(false)?;
+        Some(super::pick_view_vector(yaw, pitch))
+    }
     pub(super) fn xr_look(&mut self) {
         horizon_xr::set_menu(self.title.is_some() || self.screen != super::Screen::Playing);
         self.xr_swim();
@@ -798,6 +838,7 @@ impl super::Game<'_> {
         });
         let aim = aim.filter(|_| playing);
         let other = other.filter(|_| playing);
+        self.xr_teleport_frame(playing);
         horizon_xr::set_aim_points(if look_left { [aim, other] } else { [other, aim] });
         // Swimming goes where the head looks (the left stick's click sprints into a swim), and
         // food held at the mouth in water must not point the swim down.

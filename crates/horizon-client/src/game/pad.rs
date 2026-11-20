@@ -511,7 +511,9 @@ impl Game<'_> {
                 Ok(())
             }
             Route::Sneak
-                if self.settings.controller.toggle_sneak && !self.settings.toggle_crouch =>
+                if self.settings.controller.toggle_sneak
+                    && !self.settings.toggle_crouch
+                    && !grip_holds_sneak() =>
             {
                 // A stick click flips sneaking instead of holding it, as
                 // vanilla's toggle crouch does: a screen opening releases it
@@ -832,4 +834,15 @@ impl Game<'_> {
             }
         }
     }
+}
+
+/// VR's QuestCraft layout crouches while the left grip is held, as QuestCraft does, whatever
+/// the controller's toggle sneak says (`horizon_xr::questcraft_layout`).
+#[cfg(target_os = "android")]
+fn grip_holds_sneak() -> bool {
+    horizon_xr::questcraft_layout()
+}
+#[cfg(not(target_os = "android"))]
+fn grip_holds_sneak() -> bool {
+    false
 }

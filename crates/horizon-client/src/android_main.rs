@@ -43,7 +43,17 @@ fn android_main(app: AndroidApp) {
         {
             std::env::set_var("HORIZON_SPIKES", text.trim());
         }
+        // `startup-trace.txt` in the game folder turns on HORIZON_STARTUP_TRACE: each step of
+        // the start (renderer, pipelines, textures, the handoff to the game) with its thread
+        // and time, in startup-trace.json beside it (Chrome trace format: Perfetto opens it).
+        if home.join("startup-trace.txt").exists()
+            && std::env::var_os("HORIZON_STARTUP_TRACE").is_none()
+        {
+            std::env::set_var("HORIZON_STARTUP_TRACE", home.join("startup-trace.json"));
+        }
     }
+    // As the desktop's entry does first thing; Android has no `main`.
+    horizon_client::spans::startup::init(std::time::Instant::now());
     let _ = std::fs::create_dir_all(home.join("..").join("cache"));
     let _ = std::env::set_current_dir(&home);
     // The folders players drop things into, ready in the Files app's Horizon root.
@@ -63,6 +73,30 @@ fn android_main(app: AndroidApp) {
         if text.lines().any(|l| l.trim() == "msaa=0") && std::env::var_os("HORIZON_XR_MSAA").is_none() {
             // SAFETY: still before the game starts its threads.
             unsafe { std::env::set_var("HORIZON_XR_MSAA", "off") };
+        }
+        // Snap turning (`turn=` degrees, 0 smooth) and teleport movement (`teleport=1`).
+        let number = |key: &str| {
+            text.lines()
+                .filter_map(|l| l.split_once('='))
+                .find(|(k, _)| k.trim() == key)
+                .and_then(|(_, v)| v.trim().parse::<f32>().ok())
+        };
+        if let Some(step) = number("turn").filter(|d| *d > 0.0)
+            && std::env::var_os("HORIZON_XR_TURN").is_none()
+        {
+            // SAFETY: still before the game starts its threads.
+            unsafe {
+                std::env::set_var("HORIZON_XR_TURN", "snap");
+                std::env::set_var("HORIZON_XR_SNAP", step.to_string());
+            }
+        }
+        if number("layout").is_some_and(|l| l == 1.0) && std::env::var_os("HORIZON_XR_LAYOUT").is_none() {
+            // SAFETY: still before the game starts its threads.
+            unsafe { std::env::set_var("HORIZON_XR_LAYOUT", "questcraft") };
+        }
+        if number("teleport").is_some_and(|t| t != 0.0) && std::env::var_os("HORIZON_XR_MOVE").is_none() {
+            // SAFETY: still before the game starts its threads.
+            unsafe { std::env::set_var("HORIZON_XR_MOVE", "teleport") };
         }
         for (key, var) in [("scale", "HORIZON_XR_SCALE"), ("hz", "HORIZON_XR_HZ")] {
             let value = text
@@ -96,7 +130,6 @@ fn android_main(app: AndroidApp) {
     crash::install(home.clone(), "client");
     if let Some(internal) = app.internal_data_path() {
         apply_vulkan_driver(&internal);
-        apply_safe_mode(&internal);
         android_msa::prepare(&internal, &home);
     }
     // VR: OpenXR attaches to this activity; the renderer opens its device through it.
@@ -110,12 +143,10 @@ fn android_main(app: AndroidApp) {
         // SAFETY: still before the game starts its threads.
         unsafe { std::env::set_var("HORIZON_HDR_OUTPUT", "none") };
     }
-    if let Some(internal) = app.internal_data_path()
-        && !flat
-    {
+    if !flat {
         // SAFETY: android-activity's JavaVM and activity, valid for the whole process.
         unsafe {
-            horizon_xr::set_android_context(app.vm_as_ptr(), app.activity_as_ptr(), internal);
+            horizon_xr::set_android_context(app.vm_as_ptr(), app.activity_as_ptr());
         }
     }
     let _ = game::ANDROID_APP.set(app.clone());
@@ -184,33 +215,5 @@ fn clear_launch_marks(app: &AndroidApp) {
     }
 }
 
-/// Safe start: a launch that died within its first 25 seconds (with the system driver)
-/// leaves `launch.pending`; after two such launches in a row the next ones start on
-/// OpenGL ES with GPU occlusion culling off. Some drivers (Adreno 740 on certain firmware,
-/// Mali on old Android) fail inside Vulkan before the first frame. `safe-mode.txt` in
-/// internal storage keeps it on until the profile screen's "Try Vulkan again" deletes it.
-fn apply_safe_mode(internal: &std::path::Path) {
-    let pending = internal.join("launch.pending");
-    let forced = internal.join("safe-mode.txt");
-    let failures: u32 = std::fs::read_to_string(&pending)
-        .ok()
-        .and_then(|t| t.trim().parse().ok())
-        .unwrap_or(0);
-    let safe = forced.exists() || failures >= 2;
-    if failures >= 2 && !forced.exists() {
-        let _ = std::fs::write(&forced, b"Vulkan failed to start twice; delete this file to try it again\n");
-    }
-    if safe && std::env::var_os("HORIZON_GRAPHICS_API").is_none() {
-        log::warn!("Horizon: safe start (OpenGL ES, no GPU culling) after {failures} failed launches");
-        // SAFETY: still before any other thread starts.
-        unsafe {
-            std::env::set_var("HORIZON_GRAPHICS_API", "opengl");
-            std::env::set_var("HORIZON_GPU_CULL", "0");
-        }
-    }
-    let _ = std::fs::write(&pending, format!("{}", failures + 1));
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(25));
-        let _ = std::fs::remove_file(pending);
-    });
-}
+// No safe start (OpenGL ES after two short launches): GLES has no VR, so on a headset it
+// turned the game flat for good after two crashes or quick quits.

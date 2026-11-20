@@ -40,7 +40,9 @@
         android:extractNativeLibs="true"
         android:largeHeap="true"
         android:theme="@style/HorizonGame">
-        <meta-data android:name="com.oculus.supportedDevices" android:value="quest2|questpro|quest3|quest3s" />
+        <!-- Quest 1 build: its VR runtime aborts at xrCreateInstance on a name it doesn't
+             know ("Unknown device to support: quest3"), so only the names it knows. -->
+        <meta-data android:name="com.oculus.supportedDevices" android:value="quest|quest2" />
         <profileable android:shell="true" />
         <activity
             android:name=".SetupActivity"
@@ -55,12 +57,16 @@
         <activity
             android:name=".HorizonActivity"
             android:exported="false"
+            android:taskAffinity="dev.horizonlab.horizon.vr"
             android:screenOrientation="sensorLandscape"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustNothing|stateHidden"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|smallestScreenSize|fontScale|locale|layoutDirection|touchscreen|mcc|mnc|colorMode|fontWeightAdjustment|grammaticalGender">
             <meta-data android:name="android.app.lib_name" android:value="horizon" />
-            <!-- Quest: the game is an immersive (VR) activity, opened from the 2D setup panel. -->
+            <!-- Quest: the game is an immersive (VR) activity, opened from the 2D setup panel. It
+                 runs in a task of its own (taskAffinity, started with FLAG_ACTIVITY_NEW_TASK):
+                 in the panel's task its window opened on the panel's display and the VR session
+                 never got focus (Quest 1: flat, no controllers). -->
             <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

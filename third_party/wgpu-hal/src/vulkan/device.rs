@@ -823,6 +823,13 @@ impl super::Device {
         self.shared.queue_index
     }
 
+    /// Horizon: write the pipeline cache to [`super::disk_cache::set_file`]'s
+    /// file if a pipeline was compiled since the last save. Returns the bytes
+    /// written; `None` when nothing needed saving or there is no file.
+    pub fn save_pipeline_disk_cache(&self) -> Option<usize> {
+        self.shared.disk_cache.as_ref()?.save(&self.shared.raw)
+    }
+
     pub fn raw_device(&self) -> &ash::Device {
         &self.shared.raw
     }
@@ -2161,9 +2168,15 @@ impl crate::Device for super::Device {
                 .render_pass(raw_pass)
         }];
 
+        // Horizon: a pipeline that names no cache compiles through the one kept on disk.
+        let disk_cache = match desc.cache {
+            None => self.shared.disk_cache.as_ref(),
+            Some(_) => None,
+        };
         let pipeline_cache = desc
             .cache
             .map(|it| it.raw)
+            .or(disk_cache.map(|cache| cache.raw()))
             .unwrap_or(vk::PipelineCache::null());
 
         let mut raw_vec = {
@@ -2175,6 +2188,9 @@ impl crate::Device for super::Device {
                     .map_err(|(_, e)| super::map_pipeline_err(e))
             }?
         };
+        if let Some(cache) = disk_cache {
+            cache.note_compiled();
+        }
 
         let raw = raw_vec.pop().unwrap();
         if let Some(label) = desc.label {
@@ -2244,9 +2260,15 @@ impl crate::Device for super::Device {
                 .stage(compiled.create_info)
         }];
 
+        // Horizon: a pipeline that names no cache compiles through the one kept on disk.
+        let disk_cache = match desc.cache {
+            None => self.shared.disk_cache.as_ref(),
+            Some(_) => None,
+        };
         let pipeline_cache = desc
             .cache
             .map(|it| it.raw)
+            .or(disk_cache.map(|cache| cache.raw()))
             .unwrap_or(vk::PipelineCache::null());
 
         let mut raw_vec = {
@@ -2258,6 +2280,9 @@ impl crate::Device for super::Device {
                     .map_err(|(_, e)| super::map_pipeline_err(e))
             }?
         };
+        if let Some(cache) = disk_cache {
+            cache.note_compiled();
+        }
 
         let raw = raw_vec.pop().unwrap();
         if let Some(label) = desc.label {

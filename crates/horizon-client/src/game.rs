@@ -309,6 +309,8 @@ mod pad_actions;
 mod android_ime;
 #[cfg(target_os = "android")]
 mod android_input;
+#[cfg(target_os = "android")]
+mod vr_teleport;
 mod touch;
 mod pad_menu;
 mod paintings;
@@ -3781,6 +3783,12 @@ impl Game<'_> {
         }
         // Touch aiming (Android): the ray through the touched point, not the screen's centre.
         if let Some(dir) = self.touch_aim_dir() {
+            return Some((self.eye_position()?, dir));
+        }
+        // VR: the player faces where the head looks; blocks and mobs are aimed at with the
+        // right controller.
+        #[cfg(target_os = "android")]
+        if let Some(dir) = self.xr_aim_dir() {
             return Some((self.eye_position()?, dir));
         }
         Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
@@ -20050,6 +20058,9 @@ impl Game<'_> {
                             if self.tick_script.armed() {
                                 self.tick_script_step(event_loop);
                             }
+                            // VR: a teleport's next leg, before the player moves.
+                            #[cfg(target_os = "android")]
+                            self.xr_teleport_tick();
                             horizon_client::spans::time("tick", || self.tick())?;
                             // Cave mood (a shader pack's playerMood) samples on a random
                             // seeded from the clock: under `HORIZON_STILL` it waits for the
@@ -22510,7 +22521,9 @@ fn build_renderer(
     // over to the game.
     atlas.font.reset_cache();
     // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
-    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
+    let prepared = Some(prepared.unwrap_or_else(|| {
+        startup::time("renderer.world.textures_here", || prepare_renderer_textures(pack))
+    }));
     let atlas_pixels = atlas.pixels();
     let mut renderer = pollster::block_on(Renderer::new(
         window,
@@ -22547,14 +22560,20 @@ fn build_renderer(
     renderer
         .hud
         .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
-    pack.item_renderer
-        .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)?;
+    startup::time("renderer.world.glint_atlas", || {
+        pack.item_renderer
+            .prepare_glint_atlas(renderer.device.limits().max_texture_dimension_2d, filtering)
+    })?;
     renderer.set_lines_shader(atlas.lines_shader.as_deref());
-    renderer.set_custom_sky(&pack.custom_sky);
+    startup::time("renderer.world.custom_sky", || {
+        renderer.set_custom_sky(&pack.custom_sky)
+    });
     let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
-    renderer
-        .hud
-        .set_cit_glints(&renderer.device, &renderer.queue, cit_glints);
+    startup::time("renderer.world.cit_glints", || {
+        renderer
+            .hud
+            .set_cit_glints(&renderer.device, &renderer.queue, cit_glints)
+    });
     Ok(renderer)
 }
 

@@ -21,7 +21,6 @@ use ash::vk::{self, Handle};
 use glam::{Quat, Vec3};
 use openxr as xr;
 use std::ffi::{CStr, CString, c_void};
-use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 use wgpu::hal::api::Vulkan;
@@ -30,9 +29,14 @@ use wgpu::hal::vulkan as hv;
 /// Eye images are drawn at this fraction of the runtime's recommended size: the game
 /// is drawn twice per frame, and the Quest's recommended size is large.
 const RESOLUTION_SCALE: f32 = 0.8;
-/// The farthest the head may lean away from where it started before the view stops
-/// following it, in metres (the player's body does not move with it).
+/// The farthest the head may lean away from where it started, sideways or up, before the
+/// view stops following it, in metres (the player's body does not move with it): no leaning
+/// through a wall.
 const MAX_LEAN: f32 = 0.5;
+/// How far down the view follows a crouching head, in metres: down to 0.17 m above the
+/// feet even while sneaking (eyes at 1.27 m), never into the floor, so a real crouch to
+/// mine or look under something gets there.
+const MAX_CROUCH: f32 = 1.1;
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 /// Menus show on a panel this far in front of where the head faced when they opened, and
 /// this wide, in metres.
@@ -95,6 +99,10 @@ pub struct Pad {
     pub right: [f32; 2],
     /// Left and right trigger, 0..1.
     pub triggers: [f32; 2],
+    /// The gamepad's bumpers (hotbar left and right): no Touch button, only a layout's
+    /// mapping gives them (`questcraft_layout`).
+    pub left_bumper: bool,
+    pub right_bumper: bool,
 }
 
 /// One eye of the frame being drawn, in Minecraft's world axes.
@@ -139,9 +147,6 @@ pub struct FrameViews {
 struct Context {
     vm: usize,
     activity: usize,
-    /// Where `xr.pending` is kept: a launch whose session never got focus leaves it,
-    /// and the next launch starts flat.
-    marker_dir: PathBuf,
 }
 static CONTEXT: OnceLock<Context> = OnceLock::new();
 
@@ -284,6 +289,11 @@ struct Session {
     /// the body's turn rate (degrees a second) between the last two drawn frames: a frame
     /// shown again turns by the stick's turn since (`turned_views`).
     drawn: Option<(f32, i64, Vec3)>,
+    /// Snap turning: the right stick has come back to the middle since its last turn.
+    snap_armed: bool,
+    /// Teleporting: where the player would land, from the eyes in the game's axes (as
+    /// `aim_points`), and whether it can be landed on (`set_teleport_target`).
+    teleport_point: Option<(Vec3, bool)>,
     yaw_rate: f32,
     queue: Option<wgpu::Queue>,
     stats: Stats,
@@ -379,16 +389,11 @@ pub fn note_draw(outcome: &'static str) {
 /// # Safety
 /// `vm` must be the process's `JavaVM` and `activity` a JNI reference to the activity
 /// that will run the game, both valid for the rest of the process.
-pub unsafe fn set_android_context(vm: *mut c_void, activity: *mut c_void, marker_dir: PathBuf) {
+pub unsafe fn set_android_context(vm: *mut c_void, activity: *mut c_void) {
     let _ = CONTEXT.set(Context {
         vm: vm as usize,
         activity: activity as usize,
-        marker_dir,
     });
-}
-
-fn marker() -> Option<PathBuf> {
-    CONTEXT.get().map(|c| c.marker_dir.join("xr.pending"))
 }
 
 /// Whether a VR session drives the frames (its device is open).
@@ -421,13 +426,8 @@ pub fn instance_and_adapter() -> Option<(wgpu::Instance, wgpu::Adapter)> {
     if xr_state().is_some() {
         return None;
     }
-    if let Some(marker) = marker()
-        && marker.exists()
-    {
-        let _ = std::fs::remove_file(&marker);
-        log::warn!("Horizon VR: the last VR launch never got focus; starting flat this time");
-        return None;
-    }
+    // No flat fallback after a launch that never got focus (the old `xr.pending`): on a
+    // Quest 1 it turned every second launch flat. A headset always starts in VR.
     match open_instance(ctx) {
         Ok(opened) => Some(opened),
         Err(e) => {
@@ -576,9 +576,6 @@ fn open_instance(ctx: &Context) -> Result<(wgpu::Instance, wgpu::Adapter), Strin
         session: None,
         sharpen: available.fb_composition_layer_settings,
     });
-    if let Some(marker) = marker() {
-        let _ = std::fs::write(marker, b"1");
-    }
     log::info!("Horizon VR: Vulkan {xr_version} instance ready through OpenXR");
     Ok((wgpu_instance, adapter))
 }
@@ -878,6 +875,8 @@ fn start_session(xr: &Xr, device: &wgpu::Device, raw_device: vk::Device) -> Resu
         wrist_slot: None,
         wrist_point: None,
         aim_points: [None; 2],
+        snap_armed: true,
+        teleport_point: None,
         look_left: false,
         move_turn: 0.0,
         last_lean: Vec3::ZERO,
@@ -955,6 +954,30 @@ pub fn begin_frame() -> Option<FrameViews> {
         }
         pad.left_click = s.clicks[0].2;
         pad.right_click = s.clicks[1].2;
+        // Snap turning (`HORIZON_XR_TURN=snap`): the right stick pushed aside turns the body
+        // by a step at once, once per push; the game then sees no stick turn at all.
+        if let Some(step) = snap_turn_step()
+            && !s.menu_open
+        {
+            let x = pad.right[0];
+            if s.snap_armed && x.abs() > 0.7 {
+                let turn = step * x.signum();
+                s.body_yaw += turn;
+                // Not a steady turn: the frames shown again between drawn ones don't go on
+                // turning (`yaw_rate`).
+                if let Some(drawn) = s.drawn.as_mut() {
+                    drawn.0 += turn;
+                }
+                s.yaw_rate = 0.0;
+                s.snap_armed = false;
+            } else if x.abs() < 0.3 {
+                s.snap_armed = true;
+            }
+            pad.right[0] = 0.0;
+        }
+        if questcraft_layout() {
+            pad = questcraft_pad(pad, s.menu_open);
+        }
         s.pad = pad;
         s.stats.pad = Some(read.map_err(|e| e.to_string()));
     }
@@ -964,6 +987,9 @@ pub fn begin_frame() -> Option<FrameViews> {
     if state.should_render && s.pace.repeat_now() && !s.last_views.is_empty() {
         if let Some(queue) = s.queue.clone() {
             let views = turned_views(s, state.predicted_display_time.as_nanos());
+            // The wrist's hotbar is a layer of its own, placed by the hands: it follows
+            // them on this frame too, not where they were at the last drawn one.
+            locate_hands(s, state.predicted_display_time);
             s.pending = Some((state, views));
             s.eye_drawn = [true; 2];
             s.stats.draws.entry("repeated").and_modify(|n| *n += 1).or_insert(1);
@@ -996,8 +1022,11 @@ pub fn begin_frame() -> Option<FrameViews> {
     let head_position = vec3(head.pose.position);
     s.head = Some((head_rotation, head_position));
     let anchor = *s.anchor.get_or_insert(head_position);
-    // Leaning moves the view, up to MAX_LEAN from where the head started.
-    let lean = (head_position - anchor).clamp_length_max(MAX_LEAN);
+    // Leaning moves the view, up to MAX_LEAN from where the head started sideways and up,
+    // and crouching down to MAX_CROUCH.
+    let moved = head_position - anchor;
+    let sideways = Vec3::new(moved.x, 0.0, moved.z).clamp_length_max(MAX_LEAN);
+    let lean = Vec3::new(sideways.x, moved.y.clamp(-MAX_CROUCH, MAX_LEAN), sideways.z);
     let body = body_rotation(s.body_yaw);
     let now = state.predicted_display_time.as_nanos();
     if let Some((yaw, at, _)) = s.drawn
@@ -1021,14 +1050,7 @@ pub fn begin_frame() -> Option<FrameViews> {
             ],
         }
     });
-    let time = state.predicted_display_time;
-    for (i, space) in s.hand_spaces.iter().enumerate() {
-        s.hands[i] = space
-            .locate(&s.local, time)
-            .ok()
-            .filter(|l| l.location_flags.contains(tracked))
-            .map(|l| (quat(l.pose.orientation), vec3(l.pose.position)));
-    }
+    locate_hands(s, state.predicted_display_time);
     let hands = s.hands.map(|hand| {
         hand.map(|(rotation, position)| HandPose {
             rotation: body * rotation,
@@ -1095,15 +1117,11 @@ pub fn begin_frame() -> Option<FrameViews> {
     };
     s.wrist_slot = hover.map(|(slot, _)| slot);
     s.wrist_point = hover.map(|(_, at)| at);
-    // The left stick walks where the head faces, not where the right hand aims (the
-    // player's yaw follows the aim, for picking blocks).
-    let look_hand = if s.look_left { Hand::LeftAim } else { Hand::RightAim };
-    s.move_turn = match s.hands[look_hand as usize] {
-        Some((aim, _)) => wrap_degrees(
-            yaw_pitch(body * head_rotation).0 - yaw_pitch(body * aim).0,
-        ),
-        None => 0.0,
-    };
+    // The left stick walks where the head faces: the player faces there too (`look`), but
+    // not while the game turns the player itself (toward a mob being hit, a bow's aim).
+    s.move_turn = s
+        .last_yaw
+        .map_or(0.0, |yaw| wrap_degrees(yaw_pitch(body * head_rotation).0 - yaw));
     s.menu_world = s.menu_open.then_some(s.menu_pose).flatten().map(|panel| {
         (
             body * quat(panel.orientation),
@@ -1144,6 +1162,18 @@ fn panel_hit(panel: xr::Posef, width: f32, height: f32, origin: Vec3, direction:
 
 /// The left forearm in LOCAL space: the grip's position, the aim's direction (the
 /// controller's handle slants; the arm lies along where it points).
+/// The controllers in LOCAL space at `time` (the frame's display time), untracked ones none.
+fn locate_hands(s: &mut Session, time: xr::Time) {
+    let tracked = xr::SpaceLocationFlags::ORIENTATION_VALID | xr::SpaceLocationFlags::POSITION_VALID;
+    for (i, space) in s.hand_spaces.iter().enumerate() {
+        s.hands[i] = space
+            .locate(&s.local, time)
+            .ok()
+            .filter(|l| l.location_flags.contains(tracked))
+            .map(|l| (quat(l.pose.orientation), vec3(l.pose.position)));
+    }
+}
+
 fn forearm(hands: &[Option<(Quat, Vec3)>; 4]) -> Option<(Quat, Vec3)> {
     let (_, position) = hands[Hand::LeftGrip as usize]?;
     let (rotation, _) = hands[Hand::LeftAim as usize]?;
@@ -1200,6 +1230,71 @@ pub fn move_turn() -> f32 {
 
 /// Where each controller aims in the world, camera-relative (the block or mob it picks),
 /// and the block face's normal there, left then right, for their crosshairs.
+/// Snap turning's step in degrees (`HORIZON_XR_TURN=snap`, `HORIZON_XR_SNAP` degrees,
+/// 30 by default), or none for smooth turning.
+pub fn snap_turn_step() -> Option<f32> {
+    static STEP: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *STEP.get_or_init(|| {
+        (std::env::var("HORIZON_XR_TURN").as_deref() == Ok("snap")).then(|| {
+            std::env::var("HORIZON_XR_SNAP")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|d| (5.0..=90.0).contains(d))
+                .unwrap_or(30.0)
+        })
+    })
+}
+
+/// The QuestCraft layout (`HORIZON_XR_LAYOUT=questcraft`, the launcher's Controls button).
+pub fn questcraft_layout() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_XR_LAYOUT").as_deref() == Ok("questcraft"))
+}
+
+/// The Touch buttons as QuestCraft lays them out, given as the buttons the game's own layout
+/// reads (A jumps, Y the inventory, the menu button pauses, the stick clicks sprint and
+/// sneak, the grips' and X's own uses are `xr_buttons`'):
+/// - A jumps, Y opens the inventory (and closes it), X pauses (as the menu button);
+/// - in play the left grip held crouches and the right grip held sprints, and the right
+///   stick pushed up or down changes the hotbar slot, once a push (up the next slot);
+/// - in a menu the grips keep their uses there, and B puts one item down, as the right grip.
+fn questcraft_pad(raw: Pad, menu: bool) -> Pad {
+    let mut pad = Pad {
+        a: raw.a,
+        b: false,
+        x: false,
+        y: raw.y,
+        menu: raw.menu || raw.x,
+        ..raw
+    };
+    if menu {
+        pad.right_grip = raw.right_grip || raw.b;
+    } else {
+        pad.left_click = raw.left_click || raw.right_grip;
+        pad.right_click = raw.right_click || raw.left_grip;
+        pad.left_grip = false;
+        pad.right_grip = false;
+        pad.right_bumper = raw.right[1] > 0.7;
+        pad.left_bumper = raw.right[1] < -0.7;
+        pad.right[1] = 0.0;
+    }
+    pad
+}
+
+/// Whether the left stick teleports instead of walking (`HORIZON_XR_MOVE=teleport`).
+pub fn teleport_movement() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_XR_MOVE").as_deref() == Ok("teleport"))
+}
+
+/// Where a teleport being aimed would land (from the eyes, the game's axes) and whether it
+/// can be landed on, drawn as a large crosshair on the ground; none while not aiming.
+pub fn set_teleport_target(at: Option<(Vec3, bool)>) {
+    if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
+        s.teleport_point = at;
+    }
+}
+
 pub fn set_aim_points(at: [Option<(Vec3, Option<Vec3>)>; 2]) {
     if let Some(s) = xr_state().as_mut().and_then(|x| x.session.as_mut()) {
         s.aim_points = at;
@@ -1525,6 +1620,18 @@ fn finish_frame(s: &mut Session, sharpen: bool, queue: &wgpu::Queue) {
                 ));
             }
         }
+        // A teleport being aimed: a large cross lying on the ground where the player would
+        // land, in the left hand's place, or a red dot where it can't be landed on.
+        if let Some((offset, can_land)) = s.teleport_point.filter(|_| s.menu_pose.is_none()) {
+            let body = body_rotation(s.body_yaw).inverse();
+            let at = body * offset + head_at - s.last_lean;
+            let lying = pose(facing(Vec3::Y, at), at + Vec3::Y * 0.02);
+            cross_at[0] = can_land.then_some((lying, 0.5));
+            if !can_land {
+                colours[0] = wgpu::Color { r: 0.9, g: 0.2, b: 0.2, a: 1.0 };
+                spots[0] = Some((lying, 0.15));
+            }
+        }
         for i in 0..2 {
             if spots[i].is_some() && s.dots[i].fill(&s.device, queue, colours[i]).is_err() {
                 spots[i] = None;
@@ -1710,13 +1817,10 @@ pub fn sync_yaw(yaw: f32) {
 pub fn look(yaw: f32) -> Option<(f32, f32)> {
     let mut guard = xr_state();
     let s = guard.as_mut()?.session.as_mut()?;
-    // The player looks where the right controller points (blocks are aimed at with it),
-    // where the head does while it is not tracked.
-    let aim = if s.look_left { Hand::LeftAim } else { Hand::RightAim };
-    let head = match s.hands[aim as usize] {
-        Some((rotation, _)) if !s.look_head => rotation,
-        _ => s.head?.0,
-    };
+    // The player faces where the head looks: the camera, what faces it (name tags,
+    // particles), sounds and the head other players see. The right controller only aims
+    // (the game's pick, `xr_aim_dir`).
+    let head = s.head?.0;
     if s.menu_open {
         // The menu stays where it is; the player turns to the head once it closes.
         return None;
@@ -1811,10 +1915,6 @@ fn poll_events(instance: &xr::Instance, s: &mut Session) {
                     }
                     xr::SessionState::FOCUSED => {
                         s.focused = true;
-                        // VR got going: the next launch starts in VR again.
-                        if let Some(marker) = marker() {
-                            let _ = std::fs::remove_file(marker);
-                        }
                     }
                     xr::SessionState::VISIBLE => s.focused = false,
                     xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
@@ -1950,6 +2050,8 @@ impl Actions {
             left: stick(0)?,
             right: stick(1)?,
             triggers: [f(&self.triggers[0])?, f(&self.triggers[1])?],
+            left_bumper: false,
+            right_bumper: false,
         })
     }
 }

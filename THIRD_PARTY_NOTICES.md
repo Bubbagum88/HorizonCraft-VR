@@ -44,6 +44,12 @@ contributors, with one addition on Android: an input filter that sees each input
 (`platform::android::set_input_filter`), for game controllers and the mouse. It is licensed under
 Apache-2.0 (`LICENSE` in that folder).
 
+`third_party/android-activity` is [android-activity](https://github.com/rust-mobile/android-activity)
+0.6.1 by the rust-mobile contributors, with one addition to its NativeActivity backend: a thread
+that answers input left unread for 1 s while the app's thread is busy, through the handler given
+to `set_busy_input_handler`, so Android does not show "not responding". It is licensed under MIT
+or Apache-2.0; both licenses are in that folder (`LICENSE-MIT`, `LICENSE-APACHE`).
+
 ## Pixelify Sans
 
 `crates/horizon-theme/fonts/PixelifySans-*.ttf` is [Pixelify Sans](https://github.com/eifetx/Pixelify-Sans)

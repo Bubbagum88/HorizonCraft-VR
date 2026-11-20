@@ -2305,6 +2305,12 @@ impl super::Instance {
                 super::Workarounds::FORCE_FILL_BUFFER_WITH_SIZE_GREATER_4096_ALIGNED_OFFSET_16,
                 phd_capabilities.properties.vendor_id == db::nvidia::VENDOR,
             );
+            // Adreno 5xx device ids are 0x05xxxxxx (Adreno 540: 0x05040001).
+            workarounds.set(
+                super::Workarounds::NO_ARRAY_LENGTH,
+                phd_capabilities.properties.vendor_id == db::qualcomm::VENDOR
+                    && phd_capabilities.properties.device_id >> 24 == 5,
+            );
         };
 
         if let Some(driver) = phd_capabilities.driver {
@@ -2837,7 +2843,10 @@ impl super::Adapter {
                 capabilities: Some(capabilities.iter().cloned().collect()),
                 bounds_check_policies: naga::proc::BoundsCheckPolicies {
                     index: naga::proc::BoundsCheckPolicy::Restrict,
-                    buffer: if self.private_caps.robust_buffer_access2 {
+                    buffer: if self.private_caps.robust_buffer_access2
+                        || (self.private_caps.robust_buffer_access
+                            && self.workarounds.contains(super::Workarounds::NO_ARRAY_LENGTH))
+                    {
                         naga::proc::BoundsCheckPolicy::Unchecked
                     } else {
                         naga::proc::BoundsCheckPolicy::Restrict
@@ -2902,6 +2911,9 @@ impl super::Adapter {
                 .map_err(super::map_host_device_oom_err)?
         };
 
+        let disk_cache =
+            super::disk_cache::DiskCache::open(&raw_device, &self.phd_capabilities.properties);
+
         let shared = Arc::new(super::DeviceShared {
             raw: raw_device,
             family_index,
@@ -2921,6 +2933,7 @@ impl super::Adapter {
                 external_memory_fd: external_memory_fd_fn,
             },
             pipeline_cache_validation_key,
+            disk_cache,
             vendor_id: self.phd_capabilities.properties.vendor_id,
             timestamp_period: self.phd_capabilities.properties.limits.timestamp_period,
             private_caps: self.private_caps.clone(),
